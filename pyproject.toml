@@ -1,0 +1,94 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kachedb-mcp"
+dynamic = ["version"]
+description = "High-performance Model Context Protocol (MCP) server for KacheDB — in-memory cache & SIMD semantic memory for AI agents"
+readme = "README.md"
+license = "Apache-2.0 OR MIT"
+requires-python = ">=3.10"
+authors = [{ name = "KacheDB Core Team" }]
+keywords = ["kachedb", "mcp", "model-context-protocol", "agent-memory", "semantic-cache", "antigravity", "claude-desktop", "cursor"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+dependencies = [
+    "kachedb>=0.1.0a5",
+    "mcp>=1.0.0",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+fastembed = ["fastembed>=0.3.0"]
+openai = ["openai>=1.0.0"]
+all = ["fastembed>=0.3.0", "openai>=1.0.0"]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "mypy>=1.0",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+kachedb-mcp = "kachedb_mcp.server:main"
+
+[project.urls]
+Homepage = "https://github.com/vubon/kachedb-mcp"
+Repository = "https://github.com/vubon/kachedb-mcp"
+Documentation = "https://github.com/vubon/kachedb-mcp#readme"
+"Bug Tracker" = "https://github.com/vubon/kachedb-mcp/issues"
+"KacheDB Core" = "https://github.com/vubon/kachedb"
+
+[tool.hatch.version]
+path = "src/kachedb_mcp/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kachedb_mcp"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "TCH",  # flake8-type-checking
+    "RUF",  # ruff-specific
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["kachedb_mcp", "kachedb"]
+
+[tool.mypy]
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
