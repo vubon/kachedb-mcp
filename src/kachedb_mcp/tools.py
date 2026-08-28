@@ -30,9 +30,8 @@ _semantic_cache: SemanticCache | None = None
 def get_client() -> KacheClient:
     """Lazily initialize connection to KacheDB daemon."""
     global _client
-    if _client is None:
+    if _client is None or _client.host != settings.host or _client.port != settings.port:
         _client = KacheClient(host=settings.host, port=settings.port)
-        _client.connect()
     return _client
 
 

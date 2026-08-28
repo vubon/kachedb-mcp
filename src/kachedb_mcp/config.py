@@ -7,20 +7,38 @@ Loads parameters from environment variables with safe, sensible defaults.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
 
 
-@dataclass(frozen=True)
 class Settings:
     """KacheDB MCP Server configuration."""
 
-    host: str = os.getenv("KACHEDB_HOST", "127.0.0.1")
-    port: int = int(os.getenv("KACHEDB_PORT", "6379"))
-    index_name: str = os.getenv("KACHEDB_INDEX", "agent_semantic_memory")
-    similarity_threshold: float = float(os.getenv("KACHEDB_THRESHOLD", "0.80"))
-    default_ttl_seconds: int = int(os.getenv("KACHEDB_DEFAULT_TTL", "86400"))
-    embedder_provider: str = os.getenv("KACHEDB_EMBEDDER", "auto")
-    openai_api_key: str | None = os.getenv("OPENAI_API_KEY")
+    @property
+    def host(self) -> str:
+        return os.getenv("KACHEDB_HOST", "127.0.0.1")
+
+    @property
+    def port(self) -> int:
+        return int(os.getenv("KACHEDB_PORT", "6379"))
+
+    @property
+    def index_name(self) -> str:
+        return os.getenv("KACHEDB_INDEX", "agent_semantic_memory")
+
+    @property
+    def similarity_threshold(self) -> float:
+        return float(os.getenv("KACHEDB_THRESHOLD", "0.80"))
+
+    @property
+    def default_ttl_seconds(self) -> int:
+        return int(os.getenv("KACHEDB_DEFAULT_TTL", "86400"))
+
+    @property
+    def embedder_provider(self) -> str:
+        return os.getenv("KACHEDB_EMBEDDER", "auto")
+
+    @property
+    def openai_api_key(self) -> str | None:
+        return os.getenv("OPENAI_API_KEY")
 
 
 settings = Settings()
