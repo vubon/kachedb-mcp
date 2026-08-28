@@ -1,0 +1,63 @@
+name: "🐛 Bug Report"
+description: "File a bug report for kachedb-mcp"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: "Thanks for taking the time to report a bug in `kachedb-mcp`!"
+  - type: textarea
+    id: description
+    attributes:
+      label: "Describe the bug"
+      description: "A clear and concise description of what the bug is."
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: "Steps to Reproduce"
+      description: "Minimal configuration or code snippet to reproduce the issue."
+      placeholder: |
+        # mcp_config.json
+        {
+          "mcpServers": {
+            "kachedb": {
+              "command": "kachedb-mcp",
+              "env": { "KACHEDB_HOST": "127.0.0.1", "KACHEDB_PORT": "6379" }
+            }
+          }
+        }
+        # Then I called: kache_get("my-key") and ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: "Expected Behavior"
+      description: "What you expected to happen."
+    validations:
+      required: true
+  - type: dropdown
+    id: tool
+    attributes:
+      label: "Which MCP tool is affected?"
+      options:
+        - kache_get
+        - kache_set
+        - kache_save_context
+        - kache_semantic_search
+        - kache_delete
+        - kache_stats
+        - kache_telemetry
+        - Server startup / connection
+        - Other
+    validations:
+      required: false
+  - type: input
+    id: environment
+    attributes:
+      label: "Environment"
+      description: "Python version, OS, MCP client (Antigravity IDE / Claude Desktop / Cursor), kachedb-mcp version."
+      placeholder: "Python 3.11, macOS 14, Claude Desktop, kachedb-mcp 0.1.0"
+    validations:
+      required: false

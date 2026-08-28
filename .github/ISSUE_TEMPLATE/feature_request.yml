@@ -1,0 +1,47 @@
+name: "🚀 Feature Request / New MCP Tool Proposal"
+description: "Suggest a new MCP tool or improvement for kachedb-mcp"
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: "Have an idea to extend `kachedb-mcp` with a new tool or capability? We'd love to hear it!"
+  - type: textarea
+    id: problem
+    attributes:
+      label: "Problem or Use Case"
+      description: "What problem does this solve for AI agents or coding assistants?"
+      placeholder: |
+        e.g. I want AI agents to be able to list all cached keys with a wildcard pattern,
+        so they can efficiently invalidate stale file summaries after a large refactor.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: "Proposed Solution"
+      description: "A clear description of the new tool or feature you want added."
+      placeholder: |
+        e.g. Add a `kache_keys(pattern)` MCP tool that returns all matching keys.
+    validations:
+      required: true
+  - type: dropdown
+    id: category
+    attributes:
+      label: "Category"
+      options:
+        - New MCP Tool
+        - Embedding Provider
+        - Telemetry & Observability
+        - Configuration & Environment
+        - Documentation
+        - Performance
+        - Other
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: "Alternative Solutions"
+      description: "Any alternative tools or features you've considered."
+    validations:
+      required: false
