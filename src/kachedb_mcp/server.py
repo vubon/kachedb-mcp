@@ -14,7 +14,7 @@ try:
         description="Sub-millisecond In-Memory LLM & Vector Cache for AI Coding Agents",
     )
 except ImportError:
-    from mcp.server.fastmcp import FastMCP  # type: ignore[no-redef,attr-defined]
+    from mcp.server.fastmcp import FastMCP  # type: ignore[attr-defined]
 
     mcp = FastMCP(
         "kachedb-agent-memory",

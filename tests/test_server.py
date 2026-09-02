@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
-from kachedb import KacheClient, SemanticCache
+from kachedb import KacheClient
 from kachedb_mcp.server import mcp
 from kachedb_mcp.telemetry import TelemetryTracker
 from kachedb_mcp.tools import (
@@ -68,15 +68,28 @@ class TestMCPToolsWithMocks:
         assert "OK: Cached 4 characters" in res
         assert "TTL: 3600s" in res
 
+    @patch("kachedb_mcp.tools.get_client")
     @patch("kachedb_mcp.tools.get_semantic_cache")
-    def test_kache_save_context(self, mock_get_cache: MagicMock) -> None:
-        mock_cache = MagicMock(spec=SemanticCache)
-        mock_cache.set.return_value = True
+    def test_kache_save_context(
+        self, mock_get_cache: MagicMock, mock_get_client: MagicMock
+    ) -> None:
+        mock_cache = MagicMock()
+        mock_cache.embedder = MagicMock()
+        mock_cache.embedder.encode.return_value = [0.1] * 384
         mock_get_cache.return_value = mock_cache
 
-        res = kache_save_context("S3-FIFO cache logic", "Uses small and main FIFO queues.")
+        mock_client = MagicMock(spec=KacheClient)
+        mock_client.vadd.return_value = True
+        mock_get_client.return_value = mock_client
+
+        res = kache_save_context(
+            "S3-FIFO cache logic",
+            "Uses small and main FIFO queues.",
+            workspace_id="ws_123",
+        )
         assert "OK: Saved semantic memory" in res
-        assert mock_cache.set.called
+        assert "[Workspace: ws_123]" in res
+        assert mock_client.vadd.called
 
     @patch("kachedb_mcp.tools.get_client")
     @patch("kachedb_mcp.tools.get_semantic_cache")

@@ -1,8 +1,8 @@
 """
-Tool definitions and implementations for KacheDB MCP Server.
+Tool definitions and implementations for KacheDB MCP Server v0.2.0.
 
-Provides exact key-value caching, SIMD semantic vector search, and token telemetry
-to AI coding agents (Antigravity IDE, Claude Desktop, Cursor).
+Provides exact key-value caching, SIMD semantic vector search, multi-workspace memory isolation,
+and token telemetry dogfooding to AI coding agents (Antigravity IDE, Claude Desktop, Cursor).
 """
 
 from __future__ import annotations
@@ -76,6 +76,14 @@ def get_semantic_cache() -> SemanticCache:
     return _semantic_cache
 
 
+def _get_target_index(workspace_id: str = "") -> str:
+    """Resolve index name with workspace isolation."""
+    clean_ws = workspace_id.strip()
+    if clean_ws:
+        return f"{settings.index_name}:{clean_ws}"
+    return settings.index_name
+
+
 # ── MCP Tool Implementations ──────────────────────────────────────────────────
 
 
@@ -96,10 +104,10 @@ def kache_get(key: str) -> str:
 
         if val is not None:
             text = val.decode("utf-8", errors="replace") if isinstance(val, bytes) else str(val)
-            tracker.record_hit(len(text), elapsed_us)
+            tracker.record_hit(len(text), elapsed_us, client=client)
             return text
 
-        tracker.record_miss()
+        tracker.record_miss(client=client)
         return f"[MISS] Key '{key}' not found in KacheDB."
     except Exception as e:
         return f"[ERROR] Failed to read from KacheDB: {e}"
@@ -121,7 +129,7 @@ def kache_set(key: str, value: str, ttl_seconds: int = 0) -> str:
         ex = ttl_seconds if ttl_seconds > 0 else None
         ok = client.set(key, value, ex=ex)
         if ok:
-            tracker.record_write()
+            tracker.record_write(client=client)
             ttl_msg = f" (TTL: {ttl_seconds}s)" if ttl_seconds > 0 else " (Persistent)"
             return f"OK: Cached {len(value)} characters under key '{key}'{ttl_msg}."
         return f"[ERROR] Server refused SET for key '{key}'."
@@ -129,25 +137,42 @@ def kache_set(key: str, value: str, ttl_seconds: int = 0) -> str:
         return f"[ERROR] Failed to write to KacheDB: {e}"
 
 
-def kache_save_context(topic: str, content: str, ttl_seconds: int = 86400) -> str:
+def kache_save_context(
+    topic: str,
+    content: str,
+    ttl_seconds: int = 86400,
+    workspace_id: str = "",
+) -> str:
     """Store an architectural insight, PR review, bug fix, or codebase knowledge in KacheDB
-    with SIMD vector embeddings for future semantic retrieval.
+    with SIMD vector embeddings and optional multi-workspace isolation.
 
     Args:
         topic: The topic, question, or search anchor (e.g. 'S3-FIFO cache eviction bug').
         content: The detailed knowledge, explanation, or code snippet to store.
         ttl_seconds: Lifetime in seconds (default: 86400 / 24 hours).
+        workspace_id: Optional workspace ID for multi-tenant isolation.
 
     Returns:
         Confirmation status.
     """
     try:
         cache = get_semantic_cache()
-        ok = cache.set(topic, content, ttl_seconds=ttl_seconds)
+        client = get_client()
+        target_index = _get_target_index(workspace_id)
+        vector = cache.embedder.encode(topic)
+
+        ok = client.vadd(
+            index=target_index,
+            item_id=topic,
+            vector=vector,
+            payload=content,
+            ex=ttl_seconds if ttl_seconds > 0 else None,
+        )
         if ok:
-            tracker.record_write()
+            tracker.record_write(client=client)
+            ws_tag = f" [Workspace: {workspace_id}]" if workspace_id else ""
             return (
-                f"OK: Saved semantic memory for '{topic}' "
+                f"OK: Saved semantic memory for '{topic}'{ws_tag} "
                 f"({len(content)} chars, TTL: {ttl_seconds}s)."
             )
         return f"[ERROR] Failed to save semantic context for '{topic}'."
@@ -155,7 +180,12 @@ def kache_save_context(topic: str, content: str, ttl_seconds: int = 86400) -> st
         return f"[ERROR] Semantic save error: {e}"
 
 
-def kache_semantic_search(query: str, top_k: int = 3, threshold: float = 0.75) -> str:
+def kache_semantic_search(
+    query: str,
+    top_k: int = 3,
+    threshold: float = 0.75,
+    workspace_id: str = "",
+) -> str:
     """Search KacheDB's semantic vector cache for relevant insights, code context,
     and past decisions matching the natural language intent of your query.
 
@@ -163,6 +193,7 @@ def kache_semantic_search(query: str, top_k: int = 3, threshold: float = 0.75) -
         query: Natural language query (e.g. 'How is memory allocated for tensors?').
         top_k: Maximum number of matches to return (default: 3).
         threshold: Minimum cosine similarity score 0.0 to 1.0 (default: 0.75).
+        workspace_id: Optional workspace ID for multi-tenant isolation.
 
     Returns:
         Formatted matches with similarity scores and cached content.
@@ -171,10 +202,11 @@ def kache_semantic_search(query: str, top_k: int = 3, threshold: float = 0.75) -
     try:
         cache = get_semantic_cache()
         client = get_client()
+        target_index = _get_target_index(workspace_id)
         query_vec = cache.embedder.encode(query)
 
         matches = client.vsearch(
-            index=cache.index_name,
+            index=target_index,
             query_vector=query_vec,
             top_k=top_k,
             threshold=threshold,
@@ -183,12 +215,15 @@ def kache_semantic_search(query: str, top_k: int = 3, threshold: float = 0.75) -
         elapsed_us = (time.perf_counter() - t0) * 1_000_000.0
 
         if not matches:
-            tracker.record_miss()
-            return f"[NO_MATCH] No semantic matches found for '{query}' (threshold >= {threshold})."
+            tracker.record_miss(client=client)
+            ws_info = f" in workspace '{workspace_id}'" if workspace_id else ""
+            msg = f"[NO_MATCH] No semantic matches found for '{query}'{ws_info}"
+            return f"{msg} (threshold >= {threshold})."
 
         total_chars = 0
+        ws_header = f" (Workspace: {workspace_id})" if workspace_id else ""
         output_lines = [
-            f"🧠 KacheDB Semantic Matches for '{query}' ({elapsed_us:.1f} µs):",
+            f"🧠 KacheDB Semantic Matches for '{query}'{ws_header} ({elapsed_us:.1f} µs):",
             "-" * 60,
         ]
 
@@ -199,25 +234,27 @@ def kache_semantic_search(query: str, top_k: int = 3, threshold: float = 0.75) -
             output_lines.append(f"[{idx}] Topic: {key_str} (Similarity: {score:.3f})")
             output_lines.append(f"    Content: {val_str}\n")
 
-        tracker.record_hit(total_chars, elapsed_us)
+        tracker.record_hit(total_chars, elapsed_us, client=client)
         return "\n".join(output_lines)
     except Exception as e:
         return f"[ERROR] Semantic search error: {e}"
 
 
-def kache_delete(key: str) -> str:
+def kache_delete(key: str, workspace_id: str = "") -> str:
     """Delete a key or semantic vector entry from KacheDB.
 
     Args:
         key: The key or topic to delete.
+        workspace_id: Optional workspace ID namespace.
 
     Returns:
         Confirmation status.
     """
     try:
         client = get_client()
+        target_index = _get_target_index(workspace_id)
         d1 = client.delete(key)
-        d2 = client.vdel(settings.index_name, key)
+        d2 = client.vdel(target_index, key)
         if d1 > 0 or d2:
             return f"OK: Removed '{key}' from KacheDB."
         return f"[NOTICE] Key '{key}' did not exist in KacheDB."
@@ -237,7 +274,7 @@ def kache_stats() -> str:
             "server": f"{settings.host}:{settings.port}",
             "vector_index": settings.index_name,
             "vector_metrics": vstats,
-            "telemetry": tracker.summary(),
+            "telemetry": tracker.summary(client=client),
         }
         return json.dumps(report, indent=2)
     except Exception as e:
@@ -245,5 +282,11 @@ def kache_stats() -> str:
 
 
 def kache_telemetry() -> str:
-    """Retrieve cumulative token savings, avoided latency, and cache hit metrics."""
-    return json.dumps(tracker.summary(), indent=2)
+    """Retrieve cumulative token savings, avoided latency, and cache hit metrics
+    dogfooding KacheDB.
+    """
+    try:
+        client = get_client()
+        return json.dumps(tracker.summary(client=client), indent=2)
+    except Exception:
+        return json.dumps(tracker.summary(), indent=2)
