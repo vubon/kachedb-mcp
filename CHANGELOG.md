@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.0] — 2026-09-09
+
+### Added
+- **Multi-Workspace Memory Isolation:**
+  - Added `workspace_id` parameter to `kache_save_context`, `kache_semantic_search`, and `kache_delete` to provide segregated vector index namespaces (`{index_name}:{workspace_id}`) across different workspaces and projects.
+- **Native Telemetry Dogfooding:**
+  - Dogfood native KacheDB atomic keys (`kachedb:telemetry:*`) for cumulative tracker metrics, tracking hits, misses, tokens saved, and avoided latency without external SQLite or disk-based JSON persistence.
+- **KacheDB Server & SDK v0.1.1 Parity:**
+  - Updated dependency to `kachedb>=0.1.1` to leverage latest vector indexing and buffer zero-copy stability.
+  - Added `pythonpath = ["src"]` to pytest configuration for reliable local development and test execution.
+
+---
+
 ## [0.1.1] — 2026-08-28
 
 ### Fixed
