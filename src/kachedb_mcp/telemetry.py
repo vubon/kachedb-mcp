@@ -21,6 +21,33 @@ KEY_WRITES = "kachedb:telemetry:writes"
 KEY_TOKENS = "kachedb:telemetry:tokens_saved"
 KEY_LATENCY_MS = "kachedb:telemetry:latency_saved_ms"
 
+# Per-operation avoided latency baselines (ms).
+#
+# Represents the typical wall-clock time the AI agent would have spent WITHOUT
+# the cache for each operation type:
+#   - "semantic_search": replaces embed + 3 file reads + LLM processing (~6,200 ms)
+#   - "kv_get":          replaces a single view_file tool call (~150 ms)
+#
+# Override via KACHEDB_BASELINE_SEMANTIC_MS / KACHEDB_BASELINE_KV_MS env vars.
+OP_BASELINE_MS: dict[str, float] = {
+    "semantic_search": 6_200.0,
+    "kv_get": 150.0,
+}
+
+
+def _get_baseline_ms(op_type: str) -> float:
+    """Return the avoided-latency baseline (ms) for the given operation type."""
+    import os
+
+    env_key = f"KACHEDB_BASELINE_{op_type.upper()}_MS"
+    env_val = os.getenv(env_key)
+    if env_val is not None:
+        try:
+            return float(env_val)
+        except ValueError:
+            pass
+    return OP_BASELINE_MS.get(op_type, 400.0)
+
 
 @dataclass
 class TelemetryTracker:
@@ -37,14 +64,40 @@ class TelemetryTracker:
         self,
         cached_content_chars: int,
         elapsed_us: float,
+        *,
+        op_type: str = "semantic_search",
+        avoided_source_chars: int | None = None,
         client: KacheClient | None = None,
     ) -> None:
-        """Record a successful cache hit and compute saved tokens and latency."""
+        """Record a successful cache hit and compute saved tokens and latency.
+
+        Args:
+            cached_content_chars: Character length of the content returned from cache.
+            elapsed_us: Actual KacheDB retrieval time in microseconds.
+            op_type: Operation type for latency baseline selection.
+                     Use ``"semantic_search"`` for ``kache_semantic_search`` hits,
+                     ``"kv_get"`` for ``kache_get`` hits.
+            avoided_source_chars: Character length of the original source content that
+                was avoided (e.g. the source file that would have been read).
+                When provided, token savings are calculated from this instead of
+                ``cached_content_chars``, giving a more accurate avoided-work estimate.
+                Falls back to ``cached_content_chars`` if not provided.
+            client: Optional live ``KacheClient`` for atomic persistence into KacheDB.
+        """
+        # Use avoided_source_chars when available so token savings
+        # reflect the original source size (what was avoided), not the response size.
+        source_chars = (
+            avoided_source_chars if avoided_source_chars is not None else cached_content_chars
+        )
+        saved_tokens = max(1, source_chars // 4)
+
+        # Use per-operation baseline instead of a single hardcoded 400 ms.
+        baseline_ms = _get_baseline_ms(op_type)
+        saved_ms = max(0.0, baseline_ms - (elapsed_us / 1000.0))
+
         with self._lock:
             self.hits += 1
-            saved_tokens = max(1, cached_content_chars // 4)
             self.tokens_saved += saved_tokens
-            saved_ms = max(0.0, 400.0 - (elapsed_us / 1000.0))
             self.latency_saved_ms += saved_ms
 
         if client is not None:
@@ -72,7 +125,16 @@ class TelemetryTracker:
                 client.incr(KEY_WRITES)
 
     def summary(self, client: KacheClient | None = None) -> dict[str, Any]:
-        """Return a structured telemetry snapshot dogfooding KacheDB keys when connected."""
+        """Return a structured telemetry snapshot dogfooding KacheDB keys when connected.
+
+        Reconciliation strategy: KacheDB atomic keys are the source of truth for
+        cross-session persistence (previous sessions' hits survive server restarts).
+        In-memory values cover hits recorded during network partitions where
+        ``client.incr()`` was silently suppressed. ``max()`` handles both cases
+        correctly without double-counting.
+        """
+        from .config import settings
+
         hits = self.hits
         misses = self.misses
         writes = self.writes
@@ -105,7 +167,9 @@ class TelemetryTracker:
 
         total_lookups = hits + misses
         hit_ratio = (hits / total_lookups * 100.0) if total_lookups > 0 else 0.0
-        est_usd_saved = (tokens / 1_000_000.0) * 5.0
+
+        # Use configurable per-model token cost instead of hardcoded $5.00/M.
+        est_usd_saved = (tokens / 1_000_000.0) * settings.token_cost_per_million
 
         return {
             "total_lookups": total_lookups,
@@ -116,6 +180,7 @@ class TelemetryTracker:
             "tokens_saved": tokens,
             "latency_saved_seconds": round(latency_ms / 1000.0, 2),
             "estimated_usd_saved": f"${est_usd_saved:.4f}",
+            "token_cost_per_million": settings.token_cost_per_million,
             "persistence": "kachedb_atomic_keys",
         }
 

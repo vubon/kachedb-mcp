@@ -40,5 +40,18 @@ class Settings:
     def openai_api_key(self) -> str | None:
         return os.getenv("OPENAI_API_KEY")
 
+    @property
+    def token_cost_per_million(self) -> float:
+        """Input token cost in USD per 1M tokens.
+
+        Override via ``KACHEDB_TOKEN_COST_PER_MILLION`` to match your model:
+        - Claude 3.7 Sonnet:  3.00
+        - Claude 3.5 Haiku:   0.80
+        - GPT-4o:             2.50
+        - GPT-4o mini:        0.15
+        - Gemini 2.0 Flash:   0.10
+        """
+        return float(os.getenv("KACHEDB_TOKEN_COST_PER_MILLION", "3.0"))
+
 
 settings = Settings()

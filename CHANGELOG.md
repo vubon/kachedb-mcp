@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.1] — 2026-09-26
+
+### Fixed
+- **Timing Isolation in Semantic Search:** Moved vector search stopwatch to start *after* embedding model inference (`embedder.encode()`), ensuring reported latency captures true KacheDB SIMD kernel execution time (< 200 µs) rather than embedding runtime.
+- **Per-Operation Avoided Latency Baselines:** Replaced flat 400 ms baseline with calibrated per-operation baselines (`semantic_search`: 6,200 ms, `kv_get`: 150 ms), configurable via `KACHEDB_BASELINE_SEMANTIC_MS` and `KACHEDB_BASELINE_KV_MS`.
+- **Avoided Source Sizing:** Added `avoided_source_chars` parameter to `record_hit()` to calculate savings based on avoided source file sizes rather than cached summary responses.
+- **Configurable Token Cost:** Replaced hardcoded `$5.00/M` USD rate with configurable `KACHEDB_TOKEN_COST_PER_MILLION` setting (defaulting to `$3.00/M` for Claude 3.7 Sonnet).
+
+---
+
 ## [0.2.0] — 2026-09-09
 
 ### Added

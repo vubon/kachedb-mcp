@@ -20,15 +20,46 @@ from kachedb_mcp.tools import (
 
 
 class TestTelemetryTracker:
-    def test_record_hit_and_miss(self) -> None:
+    def test_record_hit_semantic_search(self) -> None:
+        """Verify baseline latency, avoided source chars, and USD rate for semantic search."""
         t = TelemetryTracker()
-        t.record_hit(cached_content_chars=400, elapsed_us=50.0)
+        # Simulate a semantic search hit: 400-char payload, 50 µs search time.
+        t.record_hit(cached_content_chars=400, elapsed_us=50.0, op_type="semantic_search")
         assert t.hits == 1
-        assert t.tokens_saved == 100
-        assert t.latency_saved_ms > 300.0
+        assert t.tokens_saved == 100  # 400 chars // 4
+        # Baseline is 6200 ms for semantic_search, so latency_saved ~ 6199.95 ms
+        assert t.latency_saved_ms > 6000.0
 
+    def test_record_hit_kv_get(self) -> None:
+        """Verify kv_get uses 150 ms baseline instead of legacy 400 ms."""
+        t = TelemetryTracker()
+        t.record_hit(cached_content_chars=400, elapsed_us=50.0, op_type="kv_get")
+        assert t.hits == 1
+        # Baseline is 150 ms for kv_get, so latency_saved ~ 149.95 ms
+        assert 100.0 < t.latency_saved_ms < 200.0
+
+    def test_record_hit_avoided_source_chars(self) -> None:
+        """Verify token savings use avoided_source_chars when provided."""
+        t = TelemetryTracker()
+        # 200-char cached summary replaced a 10,000-char source file read.
+        t.record_hit(
+            cached_content_chars=200,
+            elapsed_us=50.0,
+            op_type="kv_get",
+            avoided_source_chars=10_000,
+        )
+        assert t.tokens_saved == 2_500  # 10,000 // 4, not 200 // 4 = 50
+
+    def test_record_miss(self) -> None:
+        t = TelemetryTracker()
         t.record_miss()
         assert t.misses == 1
+
+    def test_summary_fields_and_usd(self) -> None:
+        """Verify USD savings use configurable rate, not hardcoded $5.00/M."""
+        t = TelemetryTracker()
+        t.record_hit(cached_content_chars=400, elapsed_us=50.0, op_type="semantic_search")
+        t.record_miss()
 
         summary = t.summary()
         assert summary["total_lookups"] == 2
@@ -36,6 +67,10 @@ class TestTelemetryTracker:
         assert summary["cache_misses"] == 1
         assert summary["hit_ratio_percent"] == 50.0
         assert summary["tokens_saved"] == 100
+        # Default rate is $3.00/M, so $0.0003 for 100 tokens
+        assert summary["estimated_usd_saved"] == "$0.0003"
+        assert "token_cost_per_million" in summary
+        assert summary["token_cost_per_million"] == 3.0
 
 
 class TestMCPToolsWithMocks:
