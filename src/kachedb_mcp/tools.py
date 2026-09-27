@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import time
+from typing import Any
 
 from kachedb import KacheClient, SemanticCache
 from kachedb.semantic.embedders import (
@@ -43,6 +44,71 @@ def get_client() -> KacheClient:
     if _client is None or _client.host != settings.host or _client.port != settings.port:
         _client = KacheClient(host=settings.host, port=settings.port)
     return _client
+
+
+def _client_vadd(
+    client: Any,
+    *,
+    index: str | bytes,
+    item_id: str | bytes,
+    vector: Any,
+    payload: str | bytes | None = None,
+    ex: int | None = None,
+    tag_mask: int = 0,
+    tags: list[str] | None = None,
+    parent_key: str | bytes | None = None,
+) -> bool:
+    """Invoke vadd with backward-compatibility for kachedb < 0.2.0."""
+    try:
+        res = client.vadd(
+            index=index,
+            item_id=item_id,
+            vector=vector,
+            payload=payload,
+            ex=ex,
+            tag_mask=tag_mask,
+            tags=tags,
+            parent_key=parent_key,
+        )
+        return bool(res)
+    except TypeError:
+        res = client.vadd(
+            index=index,
+            item_id=item_id,
+            vector=vector,
+            payload=payload,
+            ex=ex,
+        )
+        return bool(res)
+
+
+def _client_vsearch(
+    client: Any,
+    *,
+    index: str | bytes,
+    query_vector: Any,
+    top_k: int = 1,
+    threshold: float = 0.0,
+    filter_tags: list[str] | None = None,
+) -> list[Any]:
+    """Invoke vsearch with backward-compatibility for kachedb < 0.2.0."""
+    try:
+        res = client.vsearch(
+            index=index,
+            query_vector=query_vector,
+            top_k=top_k,
+            threshold=threshold,
+            filter_tags=filter_tags,
+        )
+        return list(res)
+    except TypeError:
+        res = client.vsearch(
+            index=index,
+            query_vector=query_vector,
+            top_k=top_k,
+            threshold=threshold,
+        )
+        return list(res)
 
 
 def _resolve_embedder() -> EmbeddingAdapter:
@@ -237,7 +303,8 @@ def kache_save_context(
                 )
                 chunk_vec = cache.embedder.encode(embed_text)
 
-                ok = client.vadd(
+                ok = _client_vadd(
+                    client,
                     index=target_index,
                     item_id=chunk_id,
                     vector=chunk_vec,
@@ -253,7 +320,8 @@ def kache_save_context(
             # Also index prompt_alias directly as an anchor vector pointing to parent_key
             if prompt_alias and prompt_alias.strip():
                 anchor_vec = cache.embedder.encode(f"{topic}\n{prompt_alias.strip()}")
-                client.vadd(
+                _client_vadd(
+                    client,
                     index=target_index,
                     item_id=f"{topic}#prompt_anchor",
                     vector=anchor_vec,
@@ -291,7 +359,8 @@ def kache_save_context(
 
             _register_prompt_aliases(parent_key)
 
-            ok = client.vadd(
+            ok = _client_vadd(
+                client,
                 index=target_index,
                 item_id=topic,
                 vector=vector,
@@ -304,7 +373,8 @@ def kache_save_context(
             # Also index prompt_alias directly as an anchor vector pointing to parent_key
             if prompt_alias and prompt_alias.strip():
                 anchor_vec = cache.embedder.encode(prompt_alias.strip())
-                client.vadd(
+                _client_vadd(
+                    client,
                     index=target_index,
                     item_id=f"{topic}#prompt_anchor",
                     vector=anchor_vec,
@@ -440,7 +510,8 @@ def kache_semantic_search(
         query_vec = cache.embedder.encode(query)
 
         t0 = time.perf_counter()
-        matches = client.vsearch(
+        matches = _client_vsearch(
+            client,
             index=target_index,
             query_vector=query_vec,
             top_k=top_k,
@@ -455,7 +526,8 @@ def kache_semantic_search(
         if not matches:
             # 1. Try relaxing tags if tags were provided
             if tags:
-                matches = client.vsearch(
+                matches = _client_vsearch(
+                    client,
                     index=target_index,
                     query_vector=query_vec,
                     top_k=top_k,
@@ -468,7 +540,8 @@ def kache_semantic_search(
             # 2. If still no matches and threshold > 0.55, try relaxed threshold
             if not matches and threshold > 0.55:
                 fallback_threshold = max(0.50, threshold - 0.20)
-                matches = client.vsearch(
+                matches = _client_vsearch(
+                    client,
                     index=target_index,
                     query_vector=query_vec,
                     top_k=top_k,
@@ -482,7 +555,8 @@ def kache_semantic_search(
                         f"to {fallback_threshold:.2f}]"
                     )
                 elif tags:
-                    matches = client.vsearch(
+                    matches = _client_vsearch(
+                        client,
                         index=target_index,
                         query_vector=query_vec,
                         top_k=top_k,

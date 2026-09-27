@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from kachedb import KacheClient
 from kachedb.client import VectorMatch
 from kachedb_mcp.telemetry import TelemetryTracker
 from kachedb_mcp.tools import (
@@ -26,7 +25,7 @@ class TestHybridContextMCP:
         mock_cache.embedder.encode.return_value = [0.05] * 384
         mock_get_cache.return_value = mock_cache
 
-        mock_client = MagicMock(spec=KacheClient)
+        mock_client = MagicMock()
         mock_client.set.return_value = True
         mock_client.vadd.return_value = True
         mock_get_client.return_value = mock_client
@@ -71,7 +70,7 @@ class TestHybridContextMCP:
         mock_cache.embedder.encode.return_value = [0.1] * 384
         mock_get_cache.return_value = mock_cache
 
-        mock_client = MagicMock(spec=KacheClient)
+        mock_client = MagicMock()
         mock_client.set.return_value = True
         mock_client.vadd.return_value = True
         mock_get_client.return_value = mock_client
@@ -100,7 +99,7 @@ class TestHybridContextMCP:
         mock_cache.embedder = MagicMock()
         mock_get_cache.return_value = mock_cache
 
-        mock_client = MagicMock(spec=KacheClient)
+        mock_client = MagicMock()
         # Client returns exact content on get()
         mock_client.get.return_value = b"def evict_expired_keys_batch(): pass"
         mock_get_client.return_value = mock_client
@@ -130,7 +129,7 @@ class TestHybridContextMCP:
         mock_cache.embedder.encode.return_value = [0.2] * 384
         mock_get_cache.return_value = mock_cache
 
-        mock_client = MagicMock(spec=KacheClient)
+        mock_client = MagicMock()
         mock_client.get.return_value = None  # Exact miss
         mock_client.vsearch.return_value = [
             VectorMatch(("doc:core#chunk_1", 0.885, "SIMD vector dot product kernel", "doc:core"))
@@ -163,7 +162,7 @@ class TestHybridContextMCP:
         mock_cache.embedder.encode.return_value = [0.2] * 384
         mock_get_cache.return_value = mock_cache
 
-        mock_client = MagicMock(spec=KacheClient)
+        mock_client = MagicMock()
 
         def mock_get(key: str) -> bytes | None:
             if key == "doc:core:full":
@@ -188,7 +187,7 @@ class TestHybridContextMCP:
 
     @patch("kachedb_mcp.tools.get_client")
     def test_kache_get_parent_document_hit(self, mock_get_client: MagicMock) -> None:
-        mock_client = MagicMock(spec=KacheClient)
+        mock_client = MagicMock()
         mock_client.get.return_value = b"# Full Parent Document Content"
         mock_get_client.return_value = mock_client
 
@@ -198,7 +197,7 @@ class TestHybridContextMCP:
 
     @patch("kachedb_mcp.tools.get_client")
     def test_kache_get_parent_document_not_found(self, mock_get_client: MagicMock) -> None:
-        mock_client = MagicMock(spec=KacheClient)
+        mock_client = MagicMock()
         mock_client.get.return_value = None
         mock_get_client.return_value = mock_client
 
@@ -216,7 +215,7 @@ class TestHybridContextMCP:
         mock_cache.embedder.encode.return_value = [0.1] * 384
         mock_get_cache.return_value = mock_cache
 
-        mock_client = MagicMock(spec=KacheClient)
+        mock_client = MagicMock()
         mock_client.set.return_value = True
         mock_client.vadd.return_value = True
         mock_get_client.return_value = mock_client
@@ -259,7 +258,7 @@ class TestHybridContextMCP:
         mock_cache.embedder = MagicMock()
         mock_get_cache.return_value = mock_cache
 
-        mock_client = MagicMock(spec=KacheClient)
+        mock_client = MagicMock()
 
         def mock_get(key: str) -> bytes | None:
             if key == "query:how does vector search work in kachedb":
@@ -294,7 +293,7 @@ class TestHybridContextMCP:
         mock_cache.embedder.encode.return_value = [0.15] * 384
         mock_get_cache.return_value = mock_cache
 
-        mock_client = MagicMock(spec=KacheClient)
+        mock_client = MagicMock()
         mock_client.get.return_value = None  # Exact miss
 
         # First call with threshold=0.85 returns empty;
