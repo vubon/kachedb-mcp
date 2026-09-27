@@ -2,15 +2,26 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import MagicMock, patch
 
-from kachedb.client import VectorMatch
 from kachedb_mcp.telemetry import TelemetryTracker
 from kachedb_mcp.tools import (
     kache_get_parent_document,
     kache_save_context,
     kache_semantic_search,
 )
+
+
+class VectorMatch(tuple[Any, ...]):
+    """Test mock for vector match tuple."""
+
+    parent_key: Any = None
+
+    def __new__(cls, raw: tuple[Any, ...]) -> VectorMatch:
+        obj = super().__new__(cls, raw)
+        obj.parent_key = raw[3] if len(raw) > 3 else None
+        return obj
 
 
 class TestHybridContextMCP:
