@@ -23,6 +23,7 @@ except ImportError:
 from .tools import (
     kache_delete,
     kache_get,
+    kache_get_parent_document,
     kache_save_context,
     kache_semantic_search,
     kache_set,
@@ -30,11 +31,12 @@ from .tools import (
     kache_telemetry,
 )
 
-# Register all 7 tools
+# Register all 8 tools
 mcp.tool()(kache_get)
 mcp.tool()(kache_set)
 mcp.tool()(kache_save_context)
 mcp.tool()(kache_semantic_search)
+mcp.tool()(kache_get_parent_document)
 mcp.tool()(kache_delete)
 mcp.tool()(kache_stats)
 mcp.tool()(kache_telemetry)

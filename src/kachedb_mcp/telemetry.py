@@ -20,18 +20,25 @@ KEY_MISSES = "kachedb:telemetry:misses"
 KEY_WRITES = "kachedb:telemetry:writes"
 KEY_TOKENS = "kachedb:telemetry:tokens_saved"
 KEY_LATENCY_MS = "kachedb:telemetry:latency_saved_ms"
+KEY_EXACT_HITS = "kachedb:telemetry:exact_hits"
+KEY_VECTOR_HITS = "kachedb:telemetry:vector_hits"
+KEY_EMBED_TIME_SAVED_MS = "kachedb:telemetry:embed_time_saved_ms"
 
 # Per-operation avoided latency baselines (ms).
 #
 # Represents the typical wall-clock time the AI agent would have spent WITHOUT
 # the cache for each operation type:
 #   - "semantic_search": replaces embed + 3 file reads + LLM processing (~6,200 ms)
+#   - "exact_search":    replaces embed + 3 file reads + LLM processing (~6,200 ms)
 #   - "kv_get":          replaces a single view_file tool call (~150 ms)
+#   - "parent_doc":      replaces viewing a large source or doc file (~150 ms)
 #
 # Override via KACHEDB_BASELINE_SEMANTIC_MS / KACHEDB_BASELINE_KV_MS env vars.
 OP_BASELINE_MS: dict[str, float] = {
     "semantic_search": 6_200.0,
+    "exact_search": 6_200.0,
     "kv_get": 150.0,
+    "parent_doc": 150.0,
 }
 
 
@@ -58,6 +65,9 @@ class TelemetryTracker:
     writes: int = 0
     tokens_saved: int = 0
     latency_saved_ms: float = 0.0
+    exact_hits: int = 0
+    vector_hits: int = 0
+    embed_time_saved_ms: float = 0.0
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     def record_hit(
@@ -68,6 +78,8 @@ class TelemetryTracker:
         op_type: str = "semantic_search",
         avoided_source_chars: int | None = None,
         client: KacheClient | None = None,
+        is_exact: bool = False,
+        avoided_embedding_ms: float = 15.0,
     ) -> None:
         """Record a successful cache hit and compute saved tokens and latency.
 
@@ -75,14 +87,16 @@ class TelemetryTracker:
             cached_content_chars: Character length of the content returned from cache.
             elapsed_us: Actual KacheDB retrieval time in microseconds.
             op_type: Operation type for latency baseline selection.
-                     Use ``"semantic_search"`` for ``kache_semantic_search`` hits,
-                     ``"kv_get"`` for ``kache_get`` hits.
+                     Use ``"semantic_search"`` for vector hits, ``"exact_search"`` for
+                     exact-symbol shortcuts, ``"kv_get"`` for ``kache_get`` hits.
             avoided_source_chars: Character length of the original source content that
                 was avoided (e.g. the source file that would have been read).
                 When provided, token savings are calculated from this instead of
                 ``cached_content_chars``, giving a more accurate avoided-work estimate.
                 Falls back to ``cached_content_chars`` if not provided.
             client: Optional live ``KacheClient`` for atomic persistence into KacheDB.
+            is_exact: True if resolved via exact key shortcut without embedding model.
+            avoided_embedding_ms: Estimated neural embedding inference time saved (ms).
         """
         # Use avoided_source_chars when available so token savings
         # reflect the original source size (what was avoided), not the response size.
@@ -99,12 +113,22 @@ class TelemetryTracker:
             self.hits += 1
             self.tokens_saved += saved_tokens
             self.latency_saved_ms += saved_ms
+            if is_exact:
+                self.exact_hits += 1
+                self.embed_time_saved_ms += avoided_embedding_ms
+            elif op_type in ("semantic_search", "exact_search"):
+                self.vector_hits += 1
 
         if client is not None:
             with contextlib.suppress(Exception):
                 client.incr(KEY_HITS)
                 client.incrby(KEY_TOKENS, saved_tokens)
                 client.incrby(KEY_LATENCY_MS, int(saved_ms))
+                if is_exact:
+                    client.incr(KEY_EXACT_HITS)
+                    client.incrby(KEY_EMBED_TIME_SAVED_MS, int(avoided_embedding_ms))
+                elif op_type in ("semantic_search", "exact_search"):
+                    client.incr(KEY_VECTOR_HITS)
 
     def record_miss(self, client: KacheClient | None = None) -> None:
         """Record a cache miss."""
@@ -140,6 +164,9 @@ class TelemetryTracker:
         writes = self.writes
         tokens = self.tokens_saved
         latency_ms = self.latency_saved_ms
+        exact_hits = self.exact_hits
+        vector_hits = self.vector_hits
+        embed_saved_ms = self.embed_time_saved_ms
 
         if client is not None:
             with contextlib.suppress(Exception):
@@ -148,6 +175,9 @@ class TelemetryTracker:
                 raw_writes = client.get(KEY_WRITES)
                 raw_tokens = client.get(KEY_TOKENS)
                 raw_lat = client.get(KEY_LATENCY_MS)
+                raw_exact = client.get(KEY_EXACT_HITS)
+                raw_vector = client.get(KEY_VECTOR_HITS)
+                raw_embed = client.get(KEY_EMBED_TIME_SAVED_MS)
 
                 if raw_hits is not None:
                     h_val = raw_hits.decode() if isinstance(raw_hits, bytes) else raw_hits
@@ -164,6 +194,15 @@ class TelemetryTracker:
                 if raw_lat is not None:
                     l_val = raw_lat.decode() if isinstance(raw_lat, bytes) else raw_lat
                     latency_ms = max(latency_ms, float(l_val))
+                if raw_exact is not None:
+                    e_val = raw_exact.decode() if isinstance(raw_exact, bytes) else raw_exact
+                    exact_hits = max(exact_hits, int(e_val))
+                if raw_vector is not None:
+                    v_val = raw_vector.decode() if isinstance(raw_vector, bytes) else raw_vector
+                    vector_hits = max(vector_hits, int(v_val))
+                if raw_embed is not None:
+                    em_val = raw_embed.decode() if isinstance(raw_embed, bytes) else raw_embed
+                    embed_saved_ms = max(embed_saved_ms, float(em_val))
 
         total_lookups = hits + misses
         hit_ratio = (hits / total_lookups * 100.0) if total_lookups > 0 else 0.0
@@ -174,11 +213,14 @@ class TelemetryTracker:
         return {
             "total_lookups": total_lookups,
             "cache_hits": hits,
+            "exact_hits": exact_hits,
+            "vector_hits": vector_hits,
             "cache_misses": misses,
             "hit_ratio_percent": round(hit_ratio, 2),
             "total_writes": writes,
             "tokens_saved": tokens,
             "latency_saved_seconds": round(latency_ms / 1000.0, 2),
+            "embed_time_saved_ms": round(embed_saved_ms, 2),
             "estimated_usd_saved": f"${est_usd_saved:.4f}",
             "token_cost_per_million": settings.token_cost_per_million,
             "persistence": "kachedb_atomic_keys",

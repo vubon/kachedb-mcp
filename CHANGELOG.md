@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.0] — 2026-09-27
+
+### Added
+- **Hierarchical Document Chunking & Parent Document Linkage:**
+  - Added `kache_get_parent_document(parent_key)` tool for sub-microsecond retrieval of unabridged parent documents.
+  - Added `auto_chunk=True` and `parent_key` parameters to `kache_save_context` to automatically chunk large documents (>1,500 chars) with header breadcrumbs linked to their parent KV document.
+- **Sub-Microsecond Exact Prompt Aliasing:**
+  - Added `prompt_alias` parameter to `kache_save_context` for registering instant SwissTable lookup shortcuts (`exact:<alias>` or `exact:<ws>:<alias>`), resolving repeated prompts in < 50ns with 0ms LLM time.
+- **64-bit Bitmask Tag Pre-Filtering:**
+  - Added `tags` parameter to `kache_semantic_search` and `kache_save_context` mapped via `kachedb.tags` for zero-allocation integer bitwise AND pre-filtering in vector scans.
+- **Adaptive Fallback & Automatic Resolution:**
+  - Added `exact_first` and `resolve_parent` flags to `kache_semantic_search` with automatic prompt alias checking, `#prompt_anchor` semantic indexing, and tag/threshold relaxation fallback.
+- **Real-Time Telemetry Tracking:**
+  - Added `exact_hits` metric and avoided embedding inference time tracking to `kache_telemetry`.
+
+---
+
 ## [0.2.1] — 2026-09-26
 
 ### Fixed

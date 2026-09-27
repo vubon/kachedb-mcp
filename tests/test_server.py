@@ -186,6 +186,7 @@ class TestFastMCPRegistration:
             "kache_set",
             "kache_save_context",
             "kache_semantic_search",
+            "kache_get_parent_document",
             "kache_delete",
             "kache_stats",
             "kache_telemetry",
