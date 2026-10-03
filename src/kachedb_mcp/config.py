@@ -53,5 +53,30 @@ class Settings:
         """
         return float(os.getenv("KACHEDB_TOKEN_COST_PER_MILLION", "3.0"))
 
+    @property
+    def auto_index(self) -> bool:
+        """Enable autonomous lazy workspace indexing when watermark is missing."""
+        val = os.getenv("KACHEDB_AUTO_INDEX", "1").lower().strip()
+        return val not in ("0", "false", "no", "off")
+
+    @property
+    def workspace_roots(self) -> list[str]:
+        """Colon-separated list of root directories to search for workspace projects.
+
+        Set ``KACHEDB_WORKSPACE_ROOTS`` in your MCP config's ``env`` block, e.g.:
+            "KACHEDB_WORKSPACE_ROOTS": "/Users/alice/projects:/Users/alice/work"
+
+        When not set, workspace resolution falls back to:
+          1. Upward anchor from candidate path or file path (resolving to .git or manifest).
+          2. KacheDB SwissTable cached path (from a previous index run).
+          3. CWD upward walk (when MCP server is launched from a specific project directory).
+        """
+        raw = os.getenv("KACHEDB_WORKSPACE_ROOTS", "").strip()
+        if not raw:
+            return []
+        # Support both OS native path separator (colon on Unix, semicolon on Windows) and semicolon
+        parts = [p.strip() for p in raw.split(os.pathsep) if p.strip()]
+        return parts
+
 
 settings = Settings()

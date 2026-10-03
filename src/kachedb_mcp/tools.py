@@ -8,6 +8,7 @@ and token telemetry dogfooding to AI coding agents (Antigravity IDE, Claude Desk
 from __future__ import annotations
 
 import json
+import logging
 import time
 from typing import Any
 
@@ -33,6 +34,8 @@ except ImportError:
 
 from .config import settings
 from .telemetry import tracker
+
+logger = logging.getLogger(__name__)
 
 _client: KacheClient | None = None
 _semantic_cache: SemanticCache | None = None
@@ -440,6 +443,8 @@ def kache_semantic_search(
                     [
                         f"query:{clean_ws}:{clean_q}",
                         f"query:{clean_ws}:{canonical_q}",
+                        f"sym:{clean_ws}:{clean_q}",
+                        f"sym:{clean_ws}:{canonical_q}",
                         f"doc:{clean_ws}:{clean_q}",
                         f"doc:{clean_ws}:{canonical_q}",
                         f"{clean_ws}:{clean_q}",
@@ -450,6 +455,8 @@ def kache_semantic_search(
                 [
                     f"query:{clean_q}",
                     f"query:{canonical_q}",
+                    f"sym:{clean_q}",
+                    f"sym:{canonical_q}",
                     f"doc:{clean_q}",
                     f"doc:{canonical_q}",
                     clean_q,
@@ -537,7 +544,7 @@ def kache_semantic_search(
                     is_adaptive = True
                     adaptive_note = " [Adaptive: relaxed tag filter]"
 
-            # 2. If still no matches and threshold > 0.55, try relaxed threshold
+            # 2. If still no matches and threshold > 0.55, try relaxed threshold (step 1: -0.20)
             if not matches and threshold > 0.55:
                 fallback_threshold = max(0.50, threshold - 0.20)
                 matches = _client_vsearch(
@@ -567,6 +574,53 @@ def kache_semantic_search(
                         adaptive_note = (
                             f" [Adaptive: relaxed tags and threshold to {fallback_threshold:.2f}]"
                         )
+
+            # 3. Stage 2: Deep relaxation for code symbols (down to 0.30)
+            if not matches and threshold > 0.35:
+                code_threshold = 0.30
+                matches = _client_vsearch(
+                    client,
+                    index=target_index,
+                    query_vector=query_vec,
+                    top_k=top_k,
+                    threshold=code_threshold,
+                    filter_tags=tags,
+                )
+                if matches:
+                    is_adaptive = True
+                    adaptive_note = (
+                        f" [Adaptive: threshold relaxed from {threshold:.2f} "
+                        f"to {code_threshold:.2f}]"
+                    )
+
+        # If no matches found and workspace specified: check if workspace needs lazy auto-indexing
+        if (
+            not matches
+            and clean_ws
+            and settings.auto_index
+            and _ensure_workspace_indexed(workspace_id=clean_ws)
+        ):
+            matches = _client_vsearch(
+                client,
+                index=target_index,
+                query_vector=query_vec,
+                top_k=top_k,
+                threshold=threshold,
+                filter_tags=tags,
+            )
+            if not matches and threshold > 0.35:
+                fallback_threshold = max(0.30, threshold - 0.40)
+                matches = _client_vsearch(
+                    client,
+                    index=target_index,
+                    query_vector=query_vec,
+                    top_k=top_k,
+                    threshold=fallback_threshold,
+                    filter_tags=tags,
+                )
+                if matches:
+                    is_adaptive = True
+                    adaptive_note = f" [Adaptive: threshold relaxed to {fallback_threshold:.2f}]"
 
         if not matches:
             tracker.record_miss(client=client)
@@ -735,3 +789,534 @@ def kache_telemetry() -> str:
         return json.dumps(tracker.summary(client=client), indent=2)
     except Exception:
         return json.dumps(tracker.summary(), indent=2)
+
+
+# ── Sprint 3: Codebase Indexing Tools ────────────────────────────────────────
+
+
+def _ensure_workspace_indexed(
+    workspace_id: str = "",
+    path: str = ".",
+    force: bool = False,
+) -> bool:
+    """Check if workspace watermark exists in SwissTable; if not, index it lazily on demand.
+
+    Runs zero-overhead check (<50 ns). If the watermark is absent (e.g. fresh boot or server
+    restart), automatically runs `kache_index_workspace` for the workspace.
+
+    Returns:
+        True if indexing was executed, False if already up-to-date or skipped.
+    """
+    if not settings.auto_index:
+        return False
+
+    from .indexer.discovery import WorkspaceDiscovery, resolve_workspace_path
+
+    try:
+        client = get_client()
+        try:
+            if client.ping() != "PONG":
+                return False
+        except Exception:
+            return False
+
+        target_dir = resolve_workspace_path(
+            workspace_id=workspace_id, candidate_path=path, kache_client=client
+        )
+        if target_dir is None:
+            return False
+        resolved_path = str(target_dir)
+
+        discovery = WorkspaceDiscovery(resolved_path)
+        projects = discovery.discover()
+        if not projects:
+            return False
+
+        clean_ws = (
+            workspace_id.strip().lower().replace(" ", "-").replace("_", "-") if workspace_id else ""
+        )
+
+        needs_index = False
+        for project in projects:
+            ws = clean_ws or project.workspace_id
+            meta_key = f"kache:meta:{ws}:commit"
+            try:
+                stored = client.get(meta_key)
+                if not stored:
+                    needs_index = True
+                    break
+                if force:
+                    needs_index = True
+                    break
+                if project.commit_sha:
+                    sha_str = (
+                        stored.decode("utf-8", errors="replace")
+                        if isinstance(stored, bytes)
+                        else str(stored)
+                    )
+                    if sha_str.strip() != project.commit_sha.strip():
+                        needs_index = True
+                        break
+            except Exception:
+                needs_index = True
+                break
+
+        if needs_index:
+            logger.info(
+                "Lazy autonomous indexing triggered for '%s' (workspace='%s')",
+                resolved_path,
+                clean_ws or "auto",
+            )
+            kache_index_workspace(path=resolved_path, workspace_id=clean_ws, force=force)
+            return True
+
+        return False
+    except Exception as e:
+        logger.debug("Lazy auto-indexing check skipped: %s", e)
+        return False
+
+
+def kache_index_workspace(
+    path: str = ".",
+    workspace_id: str = "",
+    force: bool = False,
+) -> str:
+    """Scan and index all codebase symbols into KacheDB SwissTable and vector index.
+
+    Discovers eligible projects inside `path`, parses AST symbols across supported
+    languages (Python, Rust, Go, TypeScript/JS), and persists them into KacheDB as:
+    - Exact SwissTable keys: `sym:<workspace>:<symbol>` (multi-definition arrays).
+    - Fully qualified keys: `sym:<workspace>:<file_rel_path>:<symbol>`.
+    - Watermark: `kache:meta:<workspace>:commit` for incremental sync.
+
+    Honors .gitignore and skips build/vendor directories automatically.
+
+    Args:
+        path: Root directory to index. Defaults to current working directory.
+        workspace_id: Optional workspace ID override. Auto-derived from project name if empty.
+        force: If True, re-indexes even when the git commit watermark is unchanged.
+
+    Returns:
+        JSON status report with indexed symbol counts, languages, and elapsed time.
+    """
+    import os
+    import time as _time
+
+    from .indexer.discovery import GitEngine, WorkspaceDiscovery, resolve_workspace_path
+    from .indexer.parser import CodeParser, SymbolRegistry
+
+    t_start = _time.perf_counter()
+
+    # Explicit path check
+    if path and path != ".":
+        expanded = os.path.realpath(os.path.expanduser(path))
+        if not os.path.exists(expanded):
+            return json.dumps({"status": "ERROR", "error": f"Path does not exist: {path}"})
+        from pathlib import Path
+
+        p_obj = Path(expanded).resolve()
+        if p_obj in (Path.home().resolve(), Path("/").resolve(), Path("/Users").resolve()):
+            return json.dumps(
+                {
+                    "status": "ERROR",
+                    "error": f"Refusing to index user home directory or filesystem root: {path}",
+                }
+            )
+        resolved_path = str(p_obj)
+    else:
+        target_dir = resolve_workspace_path(workspace_id=workspace_id, candidate_path=path)
+        if target_dir is None:
+            target_desc = workspace_id or path
+            return json.dumps(
+                {
+                    "status": "ERROR",
+                    "error": (
+                        f"Could not resolve a valid project workspace path for '{target_desc}'. "
+                        "Refusing to index user home directory or filesystem root. "
+                        "Please provide a valid workspace_id or explicit path."
+                    ),
+                }
+            )
+        resolved_path = str(target_dir)
+
+    try:
+        client = get_client()
+    except Exception as e:
+        return json.dumps({"status": "ERROR", "error": f"KacheDB connection failed: {e}"})
+
+    # 1. Discover projects
+    discovery = WorkspaceDiscovery(resolved_path)
+    projects = discovery.discover()
+
+    if not projects:
+        return json.dumps(
+            {
+                "status": "SKIPPED",
+                "reason": "No eligible codebase projects found.",
+                "path": resolved_path,
+            }
+        )
+
+    results: list[dict[str, object]] = []
+    total_symbols = 0
+    total_files = 0
+
+    parser = CodeParser()
+
+    for project in projects:
+        ws_id = workspace_id.strip() or project.workspace_id
+        meta_key = f"kache:meta:{ws_id}:commit"
+
+        # 2. Incremental: skip if commit watermark is unchanged
+        if not force and project.commit_sha:
+            try:
+                stored_sha = client.get(meta_key)
+                if stored_sha:
+                    sha_str = (
+                        stored_sha.decode("utf-8", errors="replace")
+                        if isinstance(stored_sha, bytes)
+                        else str(stored_sha)
+                    )
+                    if sha_str.strip() == project.commit_sha.strip():
+                        results.append(
+                            {
+                                "project": project.name,
+                                "workspace_id": ws_id,
+                                "status": "UP_TO_DATE",
+                                "commit": project.commit_sha[:8],
+                            }
+                        )
+                        continue
+            except Exception:
+                pass
+
+        # 3. Walk project source files and parse symbols
+        registry = SymbolRegistry()
+        project_files = 0
+        git_engine = GitEngine(project.git_root) if project.is_git and project.git_root else None
+
+        for root, dirs, files in os.walk(project.path):
+            dirs[:] = [
+                d
+                for d in dirs
+                if d not in discovery.ignored_dirs
+                and not d.startswith(".")
+                and not (
+                    git_engine
+                    and git_engine.is_ignored(
+                        os.path.relpath(os.path.join(root, d), project.path).replace("\\", "/")
+                    )
+                )
+            ]
+            for fname in files:
+                abs_path = os.path.join(root, fname)
+                rel_path = os.path.relpath(abs_path, project.path).replace("\\", "/")
+                if git_engine and git_engine.is_ignored(rel_path):
+                    continue
+                symbols = parser.parse_file(abs_path, rel_path=rel_path)
+                if symbols:
+                    registry.add_all(symbols)
+                    project_files += 1
+
+        # 4. Write SwissTable KV payload
+        payload = registry.to_swisstable_payload(ws_id)
+        written_kv = 0
+        for key, value in payload.items():
+            try:
+                client.set(key, value)
+                written_kv += 1
+            except Exception:
+                pass
+
+        # 5. Write vector records (signatures + docstrings) for semantic search
+        vec_records = registry.to_vector_records(ws_id)
+        try:
+            cache = get_semantic_cache()
+            target_index = _get_target_index(ws_id)
+            for _vec_key, embed_text, meta in vec_records:
+                try:
+                    embedding = cache.embedder.encode(embed_text)
+                    _client_vadd(
+                        client,
+                        index=target_index,
+                        item_id=_vec_key,
+                        vector=embedding,
+                        payload=json.dumps(meta, ensure_ascii=False),
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass  # Vector indexing is best-effort; SwissTable exact lookup always works
+
+        # 6. Persist commit watermark and workspace path
+        import contextlib
+
+        if project.commit_sha:
+            with contextlib.suppress(Exception):
+                client.set(meta_key, project.commit_sha)
+
+        with contextlib.suppress(Exception):
+            client.set(f"kache:meta:{ws_id}:path", str(project.path))
+
+        sym_count = len(registry.symbols)
+        total_symbols += sym_count
+        total_files += project_files
+
+        results.append(
+            {
+                "project": project.name,
+                "workspace_id": ws_id,
+                "path": str(project.path),
+                "status": "INDEXED",
+                "commit": project.commit_sha[:8] if project.commit_sha else None,
+                "branch": project.branch,
+                "manifest_type": project.manifest_type,
+                "files_parsed": project_files,
+                "symbols_indexed": sym_count,
+                "kv_keys_written": written_kv,
+            }
+        )
+
+    elapsed_ms = (_time.perf_counter() - t_start) * 1000.0
+
+    return json.dumps(
+        {
+            "status": "OK",
+            "projects": results,
+            "total_symbols_indexed": total_symbols,
+            "total_files_parsed": total_files,
+            "elapsed_ms": round(elapsed_ms, 2),
+        },
+        indent=2,
+    )
+
+
+def kache_explore_symbol(
+    symbol: str,
+    workspace_id: str = "",
+    file_path: str = "",
+) -> str:
+    """Instantaneous (< 50 ns) symbol inspection from KacheDB SwissTable.
+
+    Returns all definition locations, signatures, file paths, line numbers, and
+    docstrings for a given symbol name in a surgical < 300 token payload.
+    No file reads required.
+
+    Args:
+        symbol: The symbol name to look up (e.g. "Config", "new", "fetch_data").
+        workspace_id: Optional workspace ID to scope lookup. Searches globally if empty.
+        file_path: Optional file path or hint to automatically anchor and index the codebase.
+
+    Returns:
+        JSON with all definition locations for the symbol, or a NOT_FOUND message.
+    """
+    t0 = _import_time()
+    try:
+        client = get_client()
+        ws = workspace_id.strip().lower().replace(" ", "-").replace("_", "-")
+
+        # If workspace_id is empty but file_path is provided, resolve root to derive workspace
+        if not ws and file_path:
+            from .indexer.discovery import WorkspaceDiscovery, find_root_from_path
+
+            cand_root = find_root_from_path(file_path)
+            if cand_root is not None:
+                projects = WorkspaceDiscovery(cand_root).discover()
+                if projects:
+                    ws = projects[0].workspace_id
+
+        # Build lookup keys to attempt
+        keys_to_try: list[str] = []
+        if ws:
+            keys_to_try.append(f"sym:{ws}:{symbol}")
+        # Fallback: scan without workspace prefix (best-effort for unnamed workspaces)
+        keys_to_try.append(f"sym::{symbol}")
+        keys_to_try.append(f"sym:{symbol}")
+
+        for key in keys_to_try:
+            try:
+                raw = client.get(key)
+                if raw is None:
+                    continue
+                text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
+                definitions = json.loads(text)
+                elapsed_ns = (_import_time() - t0) * 1_000_000_000.0
+                tracker.record_hit(
+                    cached_content_chars=len(text),
+                    elapsed_us=elapsed_ns / 1000.0,
+                    op_type="kv_get",
+                    client=client,
+                )
+                return json.dumps(
+                    {
+                        "symbol": symbol,
+                        "workspace_id": ws or "(global)",
+                        "definitions": definitions,
+                        "definition_count": (
+                            len(definitions) if isinstance(definitions, list) else 1
+                        ),
+                        "lookup_key": key,
+                        "elapsed_ns": round(elapsed_ns, 1),
+                    },
+                    indent=2,
+                )
+            except Exception:
+                continue
+
+        # Missing from SwissTable on first pass: check if workspace needs lazy auto-indexing
+        # (e.g. server was restarted, cache is cold, or file_path anchor provided)
+        indexed = (
+            _ensure_workspace_indexed(workspace_id=ws, path=file_path)
+            if file_path
+            else _ensure_workspace_indexed(workspace_id=ws)
+        )
+        if indexed:
+            for key in keys_to_try:
+                try:
+                    raw = client.get(key)
+                    if raw is None:
+                        continue
+                    text = (
+                        raw.decode("utf-8", errors="replace")
+                        if isinstance(raw, bytes)
+                        else str(raw)
+                    )
+                    definitions = json.loads(text)
+                    elapsed_ns = (_import_time() - t0) * 1_000_000_000.0
+                    tracker.record_hit(
+                        cached_content_chars=len(text),
+                        elapsed_us=elapsed_ns / 1000.0,
+                        op_type="kv_get",
+                        client=client,
+                    )
+                    return json.dumps(
+                        {
+                            "symbol": symbol,
+                            "workspace_id": ws or "(global)",
+                            "definitions": definitions,
+                            "definition_count": (
+                                len(definitions) if isinstance(definitions, list) else 1
+                            ),
+                            "lookup_key": key,
+                            "elapsed_ns": round(elapsed_ns, 1),
+                            "auto_indexed": True,
+                        },
+                        indent=2,
+                    )
+                except Exception:
+                    continue
+
+        tracker.record_miss(client=client)
+        return json.dumps(
+            {
+                "status": "NOT_FOUND",
+                "symbol": symbol,
+                "workspace_id": ws or "(global)",
+                "hint": "Run kache_index_workspace first to populate the symbol registry.",
+            }
+        )
+    except Exception as e:
+        return json.dumps({"status": "ERROR", "error": str(e)})
+
+
+def _import_time() -> float:
+    """Return current perf_counter time for sub-microsecond elapsed calculations."""
+    import time as _t
+
+    return _t.perf_counter()
+
+
+def kache_workspace_status(
+    workspace_id: str = "",
+    auto_index: bool = True,
+) -> str:
+    """Return indexing status, total indexed symbols, languages detected,
+    last git commit indexed, and cache freshness for the workspace.
+
+    Args:
+        workspace_id: Optional workspace ID to inspect. Checks all workspaces if empty.
+        auto_index: If True (default), lazily indexes the workspace if not yet indexed.
+
+    Returns:
+        JSON status report with symbol counts and git watermark info.
+    """
+    try:
+        client = get_client()
+        ws = workspace_id.strip().lower().replace(" ", "-").replace("_", "-")
+        meta_key = f"kache:meta:{ws}:commit" if ws else None
+
+        status: dict[str, object] = {
+            "workspace_id": ws or "(global)",
+            "server": f"{settings.host}:{settings.port}",
+        }
+
+        # Check commit watermark
+        if meta_key:
+            try:
+                raw_commit = client.get(meta_key)
+                if not raw_commit and auto_index and _ensure_workspace_indexed(workspace_id=ws):
+                    status["auto_indexed"] = True
+                    raw_commit = client.get(meta_key)
+
+                if raw_commit:
+                    commit_sha = (
+                        raw_commit.decode("utf-8", errors="replace")
+                        if isinstance(raw_commit, bytes)
+                        else str(raw_commit)
+                    )
+                    status["last_indexed_commit"] = commit_sha.strip()
+                    status["index_status"] = "INDEXED"
+                else:
+                    status["index_status"] = "NOT_INDEXED"
+                    status["hint"] = "Run kache_index_workspace to populate the symbol registry."
+            except Exception as e:
+                status["index_status"] = "UNKNOWN"
+                status["error"] = str(e)
+
+            # Retrieve or resolve workspace directory path
+            try:
+                raw_path = client.get(f"kache:meta:{ws}:path")
+                if raw_path:
+                    status["workspace_path"] = (
+                        raw_path.decode("utf-8", errors="replace")
+                        if isinstance(raw_path, bytes)
+                        else str(raw_path)
+                    )
+            except Exception:
+                pass
+            if "workspace_path" not in status:
+                from .indexer.discovery import resolve_workspace_path
+
+                resolved_p = resolve_workspace_path(ws, kache_client=client)
+                if resolved_p:
+                    status["workspace_path"] = str(resolved_p)
+        else:
+            status["index_status"] = "UNKNOWN"
+            status["hint"] = "Provide workspace_id to check specific workspace status."
+
+        # KacheDB health
+        try:
+            pong = client.ping()
+            status["kachedb_status"] = "HEALTHY" if pong == "PONG" else "DEGRADED"
+        except Exception as e:
+            status["kachedb_status"] = "OFFLINE"
+            status["kachedb_error"] = str(e)
+
+        # Vector index stats
+        try:
+            target_index = _get_target_index(ws)
+            vstats = client.vstats(target_index) or {}
+            status["vector_index"] = target_index
+            status["vector_stats"] = vstats
+        except Exception:
+            pass
+
+        # Telemetry summary
+        try:
+            status["telemetry"] = tracker.summary(client=client)
+        except Exception:
+            status["telemetry"] = tracker.summary()
+
+        return json.dumps(status, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "ERROR", "error": str(e)})

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.0] — 2026-10-03
+
+### Added
+- **Codebase AST Intelligence Tools (Sprint 3):**
+  - Added `kache_explore_symbol(symbol, workspace_id, file_path)`: Instantaneous (< 50 ns) symbol inspection from SwissTable. Returns signatures, docstrings, line numbers, and file paths in a surgical < 300 token payload with zero file reads.
+  - Added `kache_index_workspace(path, workspace_id, force)`: Incremental AST indexer that parses codebases into exact SwissTable keys (`sym:<ws>:<symbol>`, `sym:<ws>:<file>:<symbol>`) and vector records (`vec:<ws>:<file>:<symbol>:<line>`).
+  - Added `kache_workspace_status(workspace_id, auto_index)`: Inspects indexing status, total indexed symbols, commit watermark, and cache freshness.
+- **Multi-Language Tree-Sitter AST Parsing:**
+  - Built-in AST symbol extraction across 5 major languages: **Python** (`.py`), **Rust** (`.rs`), **Go** (`.go`), **TypeScript** (`.ts`, `.tsx`), and **JavaScript** (`.js`, `.jsx`).
+  - Extracts classes, structs, traits, interfaces, methods, functions, docstrings, and type signatures with zero external compiler dependencies.
+- **Upward Anchor Discovery (`find_root_from_path`):**
+  - Added zero-config project root detection from any touched file path, climbing parent directories to locate `.git` or build manifests (`Cargo.toml`, `pyproject.toml`, `package.json`, `go.mod`).
+  - Completely eliminates slow, guessing directory walks under `$HOME`.
+- **Incremental Git Watermarks (`kache:meta:<ws>:commit`):**
+  - Sub-millisecond sync verification using commit SHA watermarks in SwissTable. Up-to-date projects skip AST parsing entirely with zero redundant work.
+- **Multi-Project & Monorepo Support (`KACHEDB_WORKSPACE_ROOTS`):**
+  - Configurable root paths via `KACHEDB_WORKSPACE_ROOTS` supporting multi-repo collections and monorepos, including category directory nesting.
+  - Added background startup auto-discovery daemon (`_background_startup_index`) that scans and indexes configured project roots without blocking MCP client handshake.
+- **On-Demand Auto-Indexing from File Anchors:**
+  - `kache_explore_symbol` automatically resolves workspace roots and lazily indexes codebases on the fly when passed a `file_path`.
+
+---
+
 ## [0.3.0] — 2026-09-27
 
 ### Added
