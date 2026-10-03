@@ -4,21 +4,6 @@ import sys
 from typing import Any
 
 from ._version import __version__
-
-try:
-    from mcp.server.fastmcp import FastMCP  # type: ignore[attr-defined]
-
-    mcp: Any = FastMCP(
-        "kachedb-agent-memory",
-        instructions="Sub-millisecond In-Memory LLM & Vector Cache for AI Coding Agents",
-    )
-except ImportError:
-    from mcp.server import MCPServer
-
-    mcp = MCPServer(
-        name="kachedb-agent-memory",
-        version=__version__,
-    )
 from .tools import (
     kache_delete,
     kache_explore_symbol,
@@ -31,6 +16,16 @@ from .tools import (
     kache_stats,
     kache_telemetry,
     kache_workspace_status,
+)
+
+try:
+    from mcp.server.fastmcp.server import FastMCP
+except ImportError:
+    from mcp.server.fastmcp import FastMCP  # type: ignore[attr-defined,no-redef]
+
+mcp: Any = FastMCP(
+    "kachedb-agent-memory",
+    instructions="Sub-millisecond In-Memory LLM & Vector Cache for AI Coding Agents",
 )
 
 # Register all 11 tools (8 original + 3 new codebase indexing tools)
