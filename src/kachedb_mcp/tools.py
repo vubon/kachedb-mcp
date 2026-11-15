@@ -23,6 +23,11 @@ from kachedb.semantic.embedders import (
 )
 
 try:
+    from kachedb.semantic.embedders import EmbeddingGemmaAdapter
+except ImportError:
+    EmbeddingGemmaAdapter = None  # type: ignore[misc,assignment]
+
+try:
     from kachedb.semantic.chunker import MarkdownChunker
 except ImportError:
     from .chunker import MarkdownChunker  # type: ignore[assignment]
@@ -114,10 +119,37 @@ def _client_vsearch(
         return list(res)
 
 
+def _encode_query(embedder: Any, text: str) -> list[float]:
+    """Encode a search query using asymmetric task prefix when supported (EmbeddingGemma 2)."""
+    if EmbeddingGemmaAdapter is not None and isinstance(embedder, EmbeddingGemmaAdapter):
+        return embedder.encode_query(text)
+    return list(embedder.encode(text))
+
+
+def _encode_document(embedder: Any, text: str) -> list[float]:
+    """Encode a document/chunk/symbol using asymmetric indexing prefix when supported."""
+    if EmbeddingGemmaAdapter is not None and isinstance(embedder, EmbeddingGemmaAdapter):
+        return embedder.encode_document(text, truncate=True)
+    return list(embedder.encode(text))
+
+
 def _resolve_embedder() -> EmbeddingAdapter:
     """Instantiate the configured embedding backend."""
-    provider = settings.embedder_provider.lower()
+    provider = settings.embedder_provider.lower().strip()
+    target_dim = settings.embedding_dim
 
+    if provider in ("embeddinggemma", "embeddinggemma-2", "gemma", "embeddinggemma-300m"):
+        if EmbeddingGemmaAdapter is None:
+            raise ImportError(
+                "EmbeddingGemmaAdapter requires kachedb >= 0.3.0. "
+                "Upgrade kachedb or install local editable package."
+            )
+        return EmbeddingGemmaAdapter(
+            model_path=settings.model_path,
+            dimension=target_dim,
+            search_prefix=settings.search_prefix,
+            indexing_prefix=settings.indexing_prefix,
+        )
     if provider == "fastembed":
         return FastEmbedAdapter()
     if provider == "transformers":
@@ -127,16 +159,40 @@ def _resolve_embedder() -> EmbeddingAdapter:
     if provider == "openai":
         return OpenAIAdapter(api_key=settings.openai_api_key)
     if provider == "mock":
-        return MockEmbedder()
+        return MockEmbedder(dimension=target_dim)
 
-    # Auto mode: try Transformers -> FastEmbed -> SentenceTransformers -> MockEmbedder
-    for adapter_cls in (TransformersEmbedder, FastEmbedAdapter, SentenceTransformersAdapter):
+    # Auto mode: try EmbeddingGemma 2 (if model_path configured) -> Transformers
+    # -> FastEmbed -> SentenceTransformers -> MockEmbedder
+    if settings.model_path and EmbeddingGemmaAdapter is not None:
         try:
-            return adapter_cls()
-        except Exception:
-            pass
+            return EmbeddingGemmaAdapter(
+                model_path=settings.model_path,
+                dimension=target_dim,
+                search_prefix=settings.search_prefix,
+                indexing_prefix=settings.indexing_prefix,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to initialize EmbeddingGemmaAdapter from '%s' in auto mode: %s",
+                settings.model_path,
+                exc,
+            )
 
-    return MockEmbedder()
+    if target_dim == 384:
+        for adapter_cls in (TransformersEmbedder, FastEmbedAdapter, SentenceTransformersAdapter):
+            try:
+                return adapter_cls()
+            except Exception:
+                pass
+    else:
+        logger.warning(
+            "Target dimension %d is not supported by legacy 384-d adapters; "
+            "falling back to MockEmbedder(dimension=%d).",
+            target_dim,
+            target_dim,
+        )
+
+    return MockEmbedder(dimension=target_dim)
 
 
 def get_semantic_cache() -> SemanticCache:
@@ -258,8 +314,12 @@ def kache_save_context(
         ex_val = ttl_seconds if ttl_seconds > 0 else None
         clean_ws = workspace_id.strip()
 
-        # Decide whether to chunk hierarchically
-        should_chunk = auto_chunk and len(content) > 1500
+        # Decide whether to chunk hierarchically (EmbeddingGemma 2 supports 8K tokens natively)
+        is_gemma = EmbeddingGemmaAdapter is not None and isinstance(
+            cache.embedder, EmbeddingGemmaAdapter
+        )
+        chunk_threshold_chars = 16000 if is_gemma else 1500
+        should_chunk = auto_chunk and len(content) > chunk_threshold_chars
         parent_key = f"doc:{clean_ws}:{topic}" if clean_ws else f"doc:{topic}"
 
         # Helper to register exact prompt alias keys pointing to parent_key
@@ -293,7 +353,11 @@ def kache_save_context(
             _register_prompt_aliases(parent_key)
 
             # 2. Chunk document into semantic segments
-            chunker = MarkdownChunker(target_chunk_size=300, overlap=40)
+            chunker = (
+                MarkdownChunker(target_chunk_size=1200, overlap=100)
+                if is_gemma
+                else MarkdownChunker(target_chunk_size=300, overlap=40)
+            )
             chunks = chunker.chunk_document(parent_key=parent_key, markdown_text=content)
 
             saved_chunks = 0
@@ -304,7 +368,7 @@ def kache_save_context(
                     if chunk.section_title and chunk.section_title != "Root"
                     else f"{topic}\n{chunk.content}"
                 )
-                chunk_vec = cache.embedder.encode(embed_text)
+                chunk_vec = _encode_document(cache.embedder, embed_text)
 
                 ok = _client_vadd(
                     client,
@@ -322,7 +386,7 @@ def kache_save_context(
 
             # Also index prompt_alias directly as an anchor vector pointing to parent_key
             if prompt_alias and prompt_alias.strip():
-                anchor_vec = cache.embedder.encode(f"{topic}\n{prompt_alias.strip()}")
+                anchor_vec = _encode_query(cache.embedder, f"{topic}\n{prompt_alias.strip()}")
                 _client_vadd(
                     client,
                     index=target_index,
@@ -350,12 +414,20 @@ def kache_save_context(
             embed_components = [topic]
             if prompt_alias and prompt_alias.strip():
                 embed_components.append(prompt_alias.strip())
-            content_snippet = content[:1500].strip()
+            max_snippet_chars = (
+                24000
+                if (
+                    EmbeddingGemmaAdapter is not None
+                    and isinstance(cache.embedder, EmbeddingGemmaAdapter)
+                )
+                else 1500
+            )
+            content_snippet = content[:max_snippet_chars].strip()
             if content_snippet:
                 embed_components.append(content_snippet)
             embed_text = "\n\n".join(embed_components)
 
-            vector = cache.embedder.encode(embed_text)
+            vector = _encode_document(cache.embedder, embed_text)
             client.set(parent_key, content, ex=ex_val)
             if clean_ws:
                 client.set(f"{clean_ws}:{topic}", content, ex=ex_val)
@@ -375,7 +447,7 @@ def kache_save_context(
 
             # Also index prompt_alias directly as an anchor vector pointing to parent_key
             if prompt_alias and prompt_alias.strip():
-                anchor_vec = cache.embedder.encode(prompt_alias.strip())
+                anchor_vec = _encode_query(cache.embedder, prompt_alias.strip())
                 _client_vadd(
                     client,
                     index=target_index,
@@ -514,7 +586,7 @@ def kache_semantic_search(
                     )
 
         # 2. Dense Vector Semantic Search (SIMD accelerated)
-        query_vec = cache.embedder.encode(query)
+        query_vec = _encode_query(cache.embedder, query)
 
         t0 = time.perf_counter()
         matches = _client_vsearch(
@@ -1035,7 +1107,7 @@ def kache_index_workspace(
             target_index = _get_target_index(ws_id)
             for _vec_key, embed_text, meta in vec_records:
                 try:
-                    embedding = cache.embedder.encode(embed_text)
+                    embedding = _encode_document(cache.embedder, embed_text)
                     _client_vadd(
                         client,
                         index=target_index,
@@ -1043,8 +1115,8 @@ def kache_index_workspace(
                         vector=embedding,
                         payload=json.dumps(meta, ensure_ascii=False),
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Skipping vector indexing for '%s': %s", _vec_key, exc)
         except Exception:
             pass  # Vector indexing is best-effort; SwissTable exact lookup always works
 

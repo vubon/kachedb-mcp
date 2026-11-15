@@ -99,9 +99,28 @@ To automatically discover and index projects on startup, set `KACHEDB_WORKSPACE_
 }
 ```
 
+#### With Google EmbeddingGemma 2 (8K Context, 384-d MRL)
+Run high-performance, zero-PyTorch local embeddings using local ONNX weights:
+```json
+{
+  "mcpServers": {
+    "kachedb": {
+      "command": "uvx",
+      "args": ["--with", "kachedb-mcp[gemma]", "kachedb-mcp"],
+      "env": {
+        "KACHEDB_PORT": "6380",
+        "KACHEDB_EMBEDDER": "embeddinggemma-2",
+        "KACHEDB_MODEL_PATH": "/path/to/models/embeddinggemma-2",
+        "KACHEDB_EMBEDDING_DIM": "384"
+      }
+    }
+  }
+}
+```
+
 Or install via Python `pip`:
 ```bash
-pip install kachedb-mcp
+pip install "kachedb-mcp[gemma]"
 ```
 ```json
 {
@@ -109,7 +128,10 @@ pip install kachedb-mcp
     "kachedb": {
       "command": "kachedb-mcp",
       "env": {
-        "KACHEDB_PORT": "6380"
+        "KACHEDB_PORT": "6380",
+        "KACHEDB_EMBEDDER": "embeddinggemma-2",
+        "KACHEDB_MODEL_PATH": "/path/to/models/embeddinggemma-2",
+        "KACHEDB_EMBEDDING_DIM": "384"
       }
     }
   }
@@ -144,7 +166,11 @@ Tree-Sitter parsers extract rich symbol graphs with zero external compiler depen
 | `KACHEDB_THRESHOLD` | `0.80` | Minimum cosine similarity (0.0 – 1.0) for semantic hits |
 | `KACHEDB_TOKEN_COST_PER_MILLION` | `3.0` | Input token cost in USD per 1M tokens for telemetry accounting |
 | `KACHEDB_DEFAULT_TTL` | `86400` | Default cache lifetime in seconds (24h) |
-| `KACHEDB_EMBEDDER` | `auto` | Embedding provider (`auto`, `fastembed`, `transformers`, `openai`, `mock`) |
+| `KACHEDB_EMBEDDER` | `auto` | Embedding provider (`auto`, `embeddinggemma-2`, `fastembed`, `transformers`, `openai`, `mock`) |
+| `KACHEDB_EMBEDDING_DIM` | `384` | Matryoshka vector dimension (`384` default MRL slice, or `768` native) |
+| `KACHEDB_MODEL_PATH` | *(optional)* | Local directory containing `model.onnx` and `tokenizer.json` for `embeddinggemma-2` (alias: `EMBEDDING_MODEL_PATH`) |
+| `KACHEDB_SEARCH_PREFIX` | `task: search query \| text: ` | Asymmetric query prefix for `embeddinggemma-2` |
+| `KACHEDB_INDEXING_PREFIX` | `task: document indexing \| text: ` | Asymmetric document indexing prefix for `embeddinggemma-2` |
 | `OPENAI_API_KEY` | *(optional)* | API key if using `KACHEDB_EMBEDDER=openai` |
 
 ---

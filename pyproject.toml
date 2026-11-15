@@ -29,7 +29,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "kachedb>=0.1.1",
+    "kachedb>=0.4.0",
     "mcp>=1.0.0,<2.0.0",
     "pydantic>=2.0",
     "pathspec>=0.12.0",
@@ -42,9 +42,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+gemma = ["kachedb[gemma]>=0.4.0", "onnxruntime>=1.18.0", "tokenizers>=0.19.0"]
 fastembed = ["fastembed>=0.3.0"]
 openai = ["openai>=1.0.0"]
-all = ["fastembed>=0.3.0", "openai>=1.0.0"]
+all = ["fastembed>=0.3.0", "openai>=1.0.0", "onnxruntime>=1.18.0", "tokenizers>=0.19.0"]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
@@ -52,6 +53,9 @@ dev = [
     "mypy>=1.0",
     "ruff>=0.4",
 ]
+
+[tool.uv.sources]
+kachedb = { path = "../kachedb-py", editable = true }
 
 [project.scripts]
 kachedb-mcp = "kachedb_mcp.server:main"

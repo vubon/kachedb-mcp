@@ -37,6 +37,35 @@ class Settings:
         return os.getenv("KACHEDB_EMBEDDER", "auto")
 
     @property
+    def embedding_dim(self) -> int:
+        """Target Matryoshka vector dimension (384 default, or 768 for full EmbeddingGemma 2)."""
+        dim = int(os.getenv("KACHEDB_EMBEDDING_DIM", "384"))
+        if dim not in (384, 768):
+            raise ValueError(
+                f"Unsupported KACHEDB_EMBEDDING_DIM={dim} (supported values: 384, 768)"
+            )
+        return dim
+
+    @property
+    def model_path(self) -> str | None:
+        """Optional path to local ONNX model directory (`model.onnx` + `tokenizer.json`)."""
+        raw = (
+            os.getenv("KACHEDB_MODEL_PATH", "").strip()
+            or os.getenv("EMBEDDING_MODEL_PATH", "").strip()
+        )
+        return raw if raw else None
+
+    @property
+    def search_prefix(self) -> str:
+        """Asymmetric query task prefix for EmbeddingGemma 2."""
+        return os.getenv("KACHEDB_SEARCH_PREFIX", "task: search query | text: ")
+
+    @property
+    def indexing_prefix(self) -> str:
+        """Asymmetric document indexing task prefix for EmbeddingGemma 2."""
+        return os.getenv("KACHEDB_INDEXING_PREFIX", "task: document indexing | text: ")
+
+    @property
     def openai_api_key(self) -> str | None:
         return os.getenv("OPENAI_API_KEY")
 

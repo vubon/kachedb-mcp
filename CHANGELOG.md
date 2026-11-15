@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.1] — 2026-11-15
+
+### Added
+- **Google EmbeddingGemma 2 Support:**
+  - Added support for local ONNX Runtime `embeddinggemma-2` embedder via `kachedb.semantic.EmbeddingGemmaAdapter`.
+  - Added configurable environment settings:
+    - `KACHEDB_EMBEDDER=embeddinggemma-2`
+    - `KACHEDB_EMBEDDING_DIM`: `384` (default Matryoshka representation slice) or `768` (native).
+    - `KACHEDB_MODEL_PATH` / `EMBEDDING_MODEL_PATH`: Directory containing local ONNX weights (`model.onnx` + `tokenizer.json`).
+    - `KACHEDB_SEARCH_PREFIX`: Configurable asymmetric search query prefix (defaults to `task: search query | text: `).
+    - `KACHEDB_INDEXING_PREFIX`: Configurable asymmetric document indexing prefix (defaults to `task: document indexing | text: `).
+- **Asymmetric Semantic Task Routing:**
+  - Routed query encoding (`EmbeddingTask.SEARCH_QUERY`) across `kache_semantic_search` and exact query aliases.
+  - Routed document indexing (`EmbeddingTask.DOCUMENT_INDEXING`) across `kache_save_context` and `kache_index_workspace`.
+- **Extended 8K Context Chunking:**
+  - Scaled single-document chunking threshold from 1,500 to 16,000 characters when using Gemma.
+  - Increased chunk target capacity to 1,200 tokens (up from 300) to exploit the 8,192-token context window.
+- **Dependency & Packaging Updates:**
+  - Bumped core SDK dependency floor to `kachedb>=0.4.0`.
+  - Added optional extra `[project.optional-dependencies] gemma = ["kachedb[gemma]>=0.4.0", "onnxruntime>=1.18.0", "tokenizers>=0.19.0"]`.
+
+---
+
 ## [0.4.0] — 2026-10-03
 
 ### Added
