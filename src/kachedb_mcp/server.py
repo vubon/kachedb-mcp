@@ -100,7 +100,18 @@ def _background_startup_index() -> None:
 
 
 def main() -> None:
-    """CLI entrypoint for kachedb-mcp server."""
+    """CLI entrypoint for kachedb-mcp server and installer CLI."""
+    if len(sys.argv) > 1 and sys.argv[1] == "install":
+        from .installer import run_install_cli
+
+        sys.exit(run_install_cli(sys.argv[2:]))
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print(
+            "Usage: kachedb-mcp [--version | --help | install ...]\n\n"
+            "Run with no arguments to start the FastMCP stdio server.\n"
+            "Run `kachedb-mcp install --help` for IDE and AWS AI-DLC setup options."
+        )
+        sys.exit(0)
     if "--version" in sys.argv:
         print(f"kachedb-mcp v{__version__}")
         sys.exit(0)

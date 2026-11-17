@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.0] — 2026-11-17
+
+### Added
+- **Universal Agent & Workflow Framework Installer (`kachedb-mcp install`):**
+  - Added pluggable `FrameworkAdapter` registry (`--framework <aidlc|auto|all>`, keeping `--aidlc` as alias) and user-selectable `--profile <preserve|balanced|minimal|full>` presets (non-destructively preserving existing settings when configured, or prompting on TTY).
+  - Added `--ide <target>` with `--dry-run`, `--patch-agents`, `--space`, `--yes`, and `--workspace-roots` options without adding latency to default FastMCP stdio startup.
+  - Added 4-step `KACHEDB_MODEL_PATH` discovery (`--model-path`, existing env/config, workspace/`~/.kachedb`/`~/.cache` scan, zero-config `auto` FastEmbed fallback) across Antigravity, Claude Code (`.mcp.json`), Cursor (`.cursor/mcp.json`), and Codex (`.codex/config.toml`).
+  - Added section-aware marker-bounded Markdown rule injection for AWS AI-DLC (`aidlc.settings.json`, `aidlc-shared/kachedb-bounded-retrieval.md`, `team.md`, `project.md`, `phases/*.md`, `.agents/rules/kachedb_memory.md`, and `.codex/agents/*.{md,toml}`).
+  - Handled top-level `kachedb-mcp --help` / `-h` in `server.py:main()` before booting stdio transport.
+
+---
+
 ## [0.4.1] — 2026-11-15
 
 ### Added

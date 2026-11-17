@@ -138,6 +138,30 @@ pip install "kachedb-mcp[gemma]"
 }
 ```
 
+### 3. One-Command CLI Installer (IDEs & AWS AI-DLC)
+
+Automatically register `kachedb-mcp` across your IDEs or configure **AWS AI-DLC** (`awslabs/aidlc-workflows`) bounded memory rules with one idempotent command:
+
+```bash
+# Auto-register MCP server in Antigravity, Claude (.mcp.json), Cursor, and Codex
+uvx kachedb-mcp install --ide all
+
+# Auto-detect installed workflow frameworks (preserves existing settings; prompts on fresh repos)
+uvx kachedb-mcp install --framework auto --path /path/to/repo
+
+# Non-interactive setup choosing a profile: preserve | balanced | minimal | full
+uvx kachedb-mcp install --aidlc --profile balanced --yes --path /path/to/repo
+uvx kachedb-mcp install --framework all --profile minimal --yes
+
+# Both framework + IDEs, plus agent prompt directives (.codex/agents/*.{md,toml})
+uvx kachedb-mcp install --aidlc --ide all --patch-agents --yes
+
+# Preview changes without touching disk
+uvx kachedb-mcp install --aidlc --ide claude --dry-run
+```
+
+The `--ide` installer automatically discovers local EmbeddingGemma 2 weights (`--model-path`, `$KACHEDB_MODEL_PATH`, existing MCP config, `<repo>/models/embeddinggemma-2`, `~/.kachedb/models/embeddinggemma-2`) and cleanly falls back to zero-config `auto` mode when no local Gemma directory is present.
+
 ---
 
 ## 🌐 Multi-Language AST Support
