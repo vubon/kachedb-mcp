@@ -302,7 +302,7 @@ def test_configure_codex_preserves_env_and_replaces_unmarked_tables(
     (ws / ".codex" / "config.toml").write_text(
         'model = "gpt-5"\n\n'
         '[mcp_servers.kachedb]\ncommand = "old"\n\n'
-        '[mcp_servers.kachedb.env]\n'
+        "[mcp_servers.kachedb.env]\n"
         f'KACHEDB_MODEL_PATH = "{custom_gemma}"\n\n'
         '[mcp_servers.github]\ncommand = "gh"\n',
         encoding="utf-8",
@@ -514,9 +514,7 @@ def test_framework_adapter_registry_and_auto_detection(
     assert [a.name for a in detected] == ["aidlc"]
 
     # `--aidlc --framework auto` deduplicates AidlcAdapter cleanly
-    dedup_rc = run_install_cli(
-        ["--aidlc", "--framework", "auto", "--yes", "--path", str(empty_ws)]
-    )
+    dedup_rc = run_install_cli(["--aidlc", "--framework", "auto", "--yes", "--path", str(empty_ws)])
     assert dedup_rc == 0
     dedup_out = capsys.readouterr().out
     assert dedup_out.count("aidlc.settings.json") == 1

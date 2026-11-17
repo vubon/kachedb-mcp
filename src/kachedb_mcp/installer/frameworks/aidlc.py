@@ -205,7 +205,7 @@ def _patch_toml_instructions(raw_toml: str, directive_block: str) -> str | None:
         updated_inner = "\n" + updated_inner
     updated_inner = updated_inner.rstrip("\n") + prefix_newline
 
-    patched = f"{raw_toml[:body_start]}{updated_inner}{raw_toml[close_idx + len(prefix_newline):]}"
+    patched = f"{raw_toml[:body_start]}{updated_inner}{raw_toml[close_idx + len(prefix_newline) :]}"
     if tomllib is not None:
         try:
             tomllib.loads(patched)
@@ -222,9 +222,7 @@ def _patch_agents_dir(
 ) -> None:
     """Inject KacheDB directives into `.codex/agents/*.{md,toml}` if present."""
     if not agents_dir.is_dir():
-        plan.warnings.append(
-            f"Agent directory not found at {agents_dir}; skipping --patch-agents."
-        )
+        plan.warnings.append(f"Agent directory not found at {agents_dir}; skipping --patch-agents.")
         return
 
     directive_block = render_agent_directives_block(space=space)

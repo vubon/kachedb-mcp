@@ -151,9 +151,7 @@ def run_install_cli(argv: Sequence[str] | None = None) -> int:
                     ignored_flags.append(f"--profile {args.profile}")
                 if args.patch_agents:
                     ignored_flags.append("--patch-agents")
-                ignored_note = (
-                    f" ({', '.join(ignored_flags)} skipped)" if ignored_flags else ""
-                )
+                ignored_note = f" ({', '.join(ignored_flags)} skipped)" if ignored_flags else ""
                 plan.warnings.append(
                     f"No initialized workflow frameworks detected in {root}{ignored_note}. "
                     "Pass --aidlc or --framework <name> to force setup."
