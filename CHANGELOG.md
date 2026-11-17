@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.1] — 2026-11-17
+
+### Fixed
+- **AI-DLC Framework Profiles:**
+  - Corrected `models.preset` for `--profile full` from `"standard"` to `"thorough"` to match AI-DLC's schema enum (`minimal`, `balanced`, `thorough`).
+  - Aligned `--profile balanced` to write `models.preset: "balanced"` (medium writing effort) for 1:1 symmetry with AI-DLC's preset definitions.
+
+---
+
 ## [0.5.0] — 2026-11-17
 
 ### Added

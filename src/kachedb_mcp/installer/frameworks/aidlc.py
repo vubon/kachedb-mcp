@@ -58,9 +58,9 @@ AIDLC_AGENT_TARGETS: tuple[str, ...] = (
 # Maps profile -> (models.preset, flags.defaultScope) or None for preserve
 PROFILE_SETTINGS: dict[InstallProfile, tuple[str, str] | None] = {
     "preserve": None,
-    "balanced": ("minimal", "classic"),
+    "balanced": ("balanced", "classic"),
     "minimal": ("minimal", "express"),
-    "full": ("standard", "feature"),
+    "full": ("thorough", "feature"),
 }
 
 _TOML_INSTRUCTIONS_RE = re.compile(

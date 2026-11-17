@@ -120,7 +120,7 @@ def test_configure_aidlc_section_placement_and_idempotency(tmp_path: Path) -> No
     # Settings without preset/defaultScope default to balanced and keep customFlag
     settings = json.loads((tmp_path / "aidlc.settings.json").read_text(encoding="utf-8"))
     assert settings["customFlag"] is True
-    assert settings["models"]["preset"] == "minimal"
+    assert settings["models"]["preset"] == "balanced"
     assert settings["flags"]["defaultScope"] == "classic"
 
     # R-03: Verify `- NEVER` strictly lives inside ## Forbidden, `- ALWAYS` inside ## Mandated
@@ -397,16 +397,16 @@ def test_configure_aidlc_profiles_and_preserve(tmp_path: Path) -> None:
     assert s_min["models"]["preset"] == "minimal"
     assert s_min["flags"]["defaultScope"] == "express"
 
-    # Explicit balanced -> classic + minimal
+    # Explicit balanced -> classic + balanced
     run_install_cli(["--aidlc", "--profile", "balanced", "--path", str(tmp_path)])
     s_bal = json.loads((tmp_path / "aidlc.settings.json").read_text(encoding="utf-8"))
-    assert s_bal["models"]["preset"] == "minimal"
+    assert s_bal["models"]["preset"] == "balanced"
     assert s_bal["flags"]["defaultScope"] == "classic"
 
-    # Explicit full -> feature + standard
+    # Explicit full -> feature + thorough
     run_install_cli(["--framework", "aidlc", "--profile", "full", "--path", str(tmp_path)])
     s_full = json.loads((tmp_path / "aidlc.settings.json").read_text(encoding="utf-8"))
-    assert s_full["models"]["preset"] == "standard"
+    assert s_full["models"]["preset"] == "thorough"
     assert s_full["flags"]["defaultScope"] == "feature"
 
     # Explicit preserve keeps existing settings + custom keys + exact formatting byte-identical
@@ -415,12 +415,12 @@ def test_configure_aidlc_profiles_and_preserve(tmp_path: Path) -> None:
     assert run_install_cli(["--aidlc", "--profile", "preserve", "--path", str(tmp_path)]) == 0
     assert (tmp_path / "aidlc.settings.json").read_text(encoding="utf-8") == raw_custom
 
-    # Re-running without --profile preserves existing `feature` + `standard`
+    # Re-running without --profile preserves existing `feature` + `thorough`
     (tmp_path / "aidlc.settings.json").write_text(
         json.dumps(
             {
                 "schemaVersion": 1,
-                "models": {"preset": "standard"},
+                "models": {"preset": "thorough"},
                 "flags": {"defaultScope": "feature"},
             }
         ),
@@ -428,7 +428,7 @@ def test_configure_aidlc_profiles_and_preserve(tmp_path: Path) -> None:
     )
     run_install_cli(["--aidlc", "--yes", "--path", str(tmp_path)])
     s_pres = json.loads((tmp_path / "aidlc.settings.json").read_text(encoding="utf-8"))
-    assert s_pres["models"]["preset"] == "standard"
+    assert s_pres["models"]["preset"] == "thorough"
     assert s_pres["flags"]["defaultScope"] == "feature"
 
 
@@ -444,7 +444,7 @@ def test_aidlc_tty_interactive_profile_prompt_and_errors(
     monkeypatch.setattr("builtins.input", lambda: "3")
     assert run_install_cli(["--framework", "aidlc", "--path", str(tmp_path)]) == 0
     settings = json.loads((tmp_path / "aidlc.settings.json").read_text(encoding="utf-8"))
-    assert settings["models"]["preset"] == "standard"
+    assert settings["models"]["preset"] == "thorough"
     assert settings["flags"]["defaultScope"] == "feature"
 
     # EOFError on unconfigured repo falls back to balanced; menu + prompt go to stderr
