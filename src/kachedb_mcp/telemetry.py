@@ -80,6 +80,7 @@ class TelemetryTracker:
         client: KacheClient | None = None,
         is_exact: bool = False,
         avoided_embedding_ms: float = 15.0,
+        estimate_savings: bool = True,
     ) -> None:
         """Record a successful cache hit and compute saved tokens and latency.
 
@@ -97,17 +98,20 @@ class TelemetryTracker:
             client: Optional live ``KacheClient`` for atomic persistence into KacheDB.
             is_exact: True if resolved via exact key shortcut without embedding model.
             avoided_embedding_ms: Estimated neural embedding inference time saved (ms).
+            estimate_savings: Apply the legacy savings model when the operation supports it.
         """
         # Use avoided_source_chars when available so token savings
         # reflect the original source size (what was avoided), not the response size.
         source_chars = (
             avoided_source_chars if avoided_source_chars is not None else cached_content_chars
         )
-        saved_tokens = max(1, source_chars // 4)
+        saved_tokens = max(1, source_chars // 4) if estimate_savings else 0
 
         # Use per-operation baseline instead of a single hardcoded 400 ms.
         baseline_ms = _get_baseline_ms(op_type)
-        saved_ms = max(0.0, baseline_ms - (elapsed_us / 1000.0))
+        saved_ms = max(0.0, baseline_ms - (elapsed_us / 1000.0)) if estimate_savings else 0.0
+        if not estimate_savings:
+            avoided_embedding_ms = 0.0
 
         with self._lock:
             self.hits += 1
@@ -122,11 +126,13 @@ class TelemetryTracker:
         if client is not None:
             with contextlib.suppress(Exception):
                 client.incr(KEY_HITS)
-                client.incrby(KEY_TOKENS, saved_tokens)
-                client.incrby(KEY_LATENCY_MS, int(saved_ms))
+                if estimate_savings:
+                    client.incrby(KEY_TOKENS, saved_tokens)
+                    client.incrby(KEY_LATENCY_MS, int(saved_ms))
                 if is_exact:
                     client.incr(KEY_EXACT_HITS)
-                    client.incrby(KEY_EMBED_TIME_SAVED_MS, int(avoided_embedding_ms))
+                    if estimate_savings:
+                        client.incrby(KEY_EMBED_TIME_SAVED_MS, int(avoided_embedding_ms))
                 elif op_type in ("semantic_search", "exact_search"):
                     client.incr(KEY_VECTOR_HITS)
 

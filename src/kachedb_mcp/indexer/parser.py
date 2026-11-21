@@ -903,21 +903,26 @@ class CodeParser:
             logger.warning("Failed to initialize tree-sitter parser for '%s': %s", lang_key, e)
             return None
 
-    def detect_language(self, path: Path | str) -> str | None:
+    @staticmethod
+    def detect_language(path: Path | str) -> str | None:
         """Infer target language from file extension."""
         suffix = Path(path).suffix.lower()
-        return self.EXTENSION_MAP.get(suffix)
+        return CodeParser.EXTENSION_MAP.get(suffix)
 
     def parse_source(
         self,
         code: str | bytes,
         language: str,
         rel_path: str = "",
+        *,
+        strict: bool = False,
     ) -> list[Symbol]:
         """Parse source code in memory and extract symbols."""
         parser = self._get_parser(language)
         extractor = self._extractors.get(language)
         if parser is None or extractor is None:
+            if strict:
+                raise ValueError(f"Parser unavailable for {language}")
             return []
 
         code_bytes = code.encode("utf-8") if isinstance(code, str) else code
@@ -925,9 +930,15 @@ class CodeParser:
         try:
             tree = parser.parse(code_bytes)
             if tree is None or tree.root_node is None:
+                if strict:
+                    raise ValueError("Tree-Sitter produced no syntax tree")
                 return []
+            if strict and tree.root_node.has_error:
+                raise ValueError("Tree-Sitter produced an incomplete syntax tree")
             return extractor.extract(tree.root_node, code_bytes, rel_path)
         except Exception as e:
+            if strict:
+                raise
             logger.debug("Tree-sitter parse error in %s: %s", rel_path, e)
             return []
 

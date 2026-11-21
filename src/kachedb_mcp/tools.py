@@ -9,10 +9,14 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 import time
-from typing import Any
+from contextlib import closing
+from functools import lru_cache
+from typing import TYPE_CHECKING, Any
 
 from kachedb import KacheClient, SemanticCache
+from kachedb.exceptions import KacheDBError
 from kachedb.semantic.embedders import (
     EmbeddingAdapter,
     FastEmbedAdapter,
@@ -38,7 +42,13 @@ except ImportError:
     from .tags import tags_to_bitmask
 
 from .config import settings
+from .indexer.catalog import Catalog, CatalogNotReadyError, catalog_path
+from .indexer.scoped_memory import Embeddings, ScopedMemory, SourceInput
+from .indexer.worktree import Worktree, WorktreeError
 from .telemetry import tracker
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -219,6 +229,149 @@ def _get_target_index(workspace_id: str = "") -> str:
     return settings.index_name
 
 
+def _scoped_embeddings() -> Embeddings:
+    embedder = get_semantic_cache().embedder
+    gemma = EmbeddingGemmaAdapter is not None and isinstance(embedder, EmbeddingGemmaAdapter)
+    model = getattr(embedder, "model", None)
+    model_name = getattr(embedder, "model_name", None)
+    if not model_name:
+        model_name = model if isinstance(model, str) else getattr(model, "model_name", None)
+    if not model_name:
+        model_name = getattr(getattr(model, "config", None), "_name_or_path", "")
+    identity = json.dumps(
+        [
+            type(embedder).__module__,
+            type(embedder).__qualname__,
+            model_name,
+            settings.model_path,
+            settings.search_prefix,
+            settings.indexing_prefix,
+        ]
+    )
+
+    def chunks(topic: str, content: str) -> list[tuple[str, str]]:
+        threshold = 16000 if gemma else 1500
+        if len(content) <= threshold:
+            return [(topic, content)]
+        chunker = MarkdownChunker(
+            target_chunk_size=1200 if gemma else 300, overlap=100 if gemma else 40
+        )
+        return [
+            (f"{topic} > {chunk.section_title}", chunk.content)
+            for chunk in chunker.chunk_document(topic, content)
+        ] or [(topic, content)]
+
+    return Embeddings(
+        identity,
+        lambda text: _encode_query(embedder, text),
+        lambda text: _encode_document(embedder, text),
+        chunks,
+    )
+
+
+@lru_cache(maxsize=4)
+def _scoped_client(host: str, port: int) -> KacheClient:
+    # Share the thread-safe pool, never a dedicated connection, across MCP calls.
+    return KacheClient(host=host, port=port, socket_timeout=1.0)
+
+
+def _track_scoped(
+    kind: str, result: dict[str, Any], elapsed_us: float, client: KacheClient | None
+) -> None:
+    status = result["status"]
+    if kind == "write":
+        if status in ("SAVED", "UPDATED"):
+            tracker.record_write(client=client)
+        return
+    matches = result.get("matches", [])
+    if status == "OK" or matches:
+        is_exact = kind != "semantic_search" or all(match["match"] == "exact" for match in matches)
+        tracker.record_hit(
+            0, elapsed_us, op_type=kind, client=client, is_exact=is_exact, estimate_savings=False
+        )
+    elif status in ("NOT_FOUND", "NO_MATCH"):
+        tracker.record_miss(client=client)
+
+
+def _scoped(
+    anchor: str,
+    workspace_id: str,
+    operation: Callable[[ScopedMemory], dict[str, Any]],
+    *,
+    hint: str = "",
+    read_only: bool = False,
+    rebuild: bool = False,
+    telemetry: str = "",
+) -> str:
+    started = time.monotonic()
+    context: dict[str, str] = {}
+    try:
+        worktree = Worktree(anchor, hint, started + 5.0)
+        path = catalog_path(worktree.root, workspace_id, settings.host, settings.port)
+        try:
+            catalog = Catalog(path, worktree.remaining(), read_only=read_only)
+        except CatalogNotReadyError:
+            return json.dumps(
+                {
+                    "status": "INDEX_REQUIRED",
+                    "index_state": "INDEX_REQUIRED",
+                    "indexed_head": None,
+                    "current_head": worktree.head(),
+                    "hint": "Run kache_index_workspace with the selected worktree_path.",
+                }
+            )
+        with closing(catalog):
+            context["worktree_id"] = catalog.namespace
+            if rebuild or (not read_only and not catalog.state().indexed):
+                worktree.deadline = started + 30.0
+            client = _scoped_client(settings.host, settings.port)
+            memory = ScopedMemory(worktree, catalog, client, _scoped_embeddings)
+            result = operation(memory)
+            if result["status"] == "INDEX_REQUIRED":
+                result["hint"] = "Run kache_index_workspace with the selected worktree_path."
+            if telemetry:
+                now = time.monotonic()
+                telemetry_client = client if worktree.deadline - now >= 2.0 else None
+                _track_scoped(telemetry, result, (now - started) * 1_000_000, telemetry_client)
+            if not read_only:
+                try:
+                    memory.cleanup()
+                except Exception:
+                    logger.debug("Scoped record cleanup will retry", exc_info=True)
+        return json.dumps({**context, **result})
+    except WorktreeError as exc:
+        return json.dumps(
+            {
+                **context,
+                "status": exc.status,
+                "reason": str(exc),
+                **({"path": exc.path} if exc.path is not None else {}),
+                **(
+                    {"hint": "Index the selected worktree or read the source files directly."}
+                    if exc.status in ("INCOMPLETE", "WORKTREE_CHANGED", "PARSE_ERROR")
+                    else {}
+                ),
+            }
+        )
+    except Exception as exc:
+        error_type = type(exc).__name__
+        logger.warning("Scoped operation failed (%s)", error_type)
+        if isinstance(exc, sqlite3.Error):
+            status, reason = "CATALOG_ERROR", "Check catalog permissions or retry a busy catalog."
+        elif isinstance(exc, KacheDBError | OSError):
+            status, reason = "STORAGE_ERROR", "Check KacheDB availability and retry the operation."
+        elif isinstance(exc, ImportError):
+            status, reason = (
+                "DEPENDENCY_ERROR",
+                "Check the configured embedding provider and its dependencies.",
+            )
+        elif isinstance(exc, ValueError):
+            status, reason = "INVALID_INPUT", "Check the request and MCP configuration."
+        else:
+            status, reason = "INTERNAL_ERROR", "Retry or read the source files directly."
+        return json.dumps({**context, "status": status, "reason": reason, "error_type": error_type})
+
+
 # ── MCP Tool Implementations ──────────────────────────────────────────────────
 
 
@@ -288,6 +441,8 @@ def kache_save_context(
     tags: list[str] | None = None,
     auto_chunk: bool = True,
     prompt_alias: str | None = None,
+    worktree_path: str | None = None,
+    sources: list[SourceInput] | None = None,
 ) -> str:
     """Store an architectural insight, PR review, bug fix, or codebase knowledge in KacheDB
     with SIMD vector embeddings, automatic hierarchical chunking, and tag bitmask filtering.
@@ -302,10 +457,25 @@ def kache_save_context(
             with parent pointers.
         prompt_alias: Optional natural language question or user prompt alias to link,
             enabling instantaneous (<50ns) exact-symbol hits for identical user queries.
+        worktree_path: Absolute Git worktree or file path for source-backed context.
+        sources: Repository-relative paths and optional SHA-256 values from the original reads.
 
     Returns:
         Confirmation status.
     """
+    if worktree_path is not None:
+        return _scoped(
+            worktree_path,
+            workspace_id,
+            lambda scope: scope.save(
+                topic, content, ttl_seconds, tags, auto_chunk, prompt_alias, sources
+            ),
+            telemetry="write",
+        )
+    if sources is not None:
+        return json.dumps(
+            {"status": "WORKTREE_REQUIRED", "reason": "Supply worktree_path with sources."}
+        )
     try:
         cache = get_semantic_cache()
         client = get_client()
@@ -482,6 +652,8 @@ def kache_semantic_search(
     tags: list[str] | None = None,
     exact_first: bool = True,
     resolve_parent: bool = False,
+    worktree_path: str | None = None,
+    require_verified: bool = False,
 ) -> str:
     """Search KacheDB's semantic vector cache for relevant insights, code context,
     and past decisions matching natural language intent, with exact symbol shortcut
@@ -495,10 +667,25 @@ def kache_semantic_search(
         tags: Optional metadata tags to pre-filter vectors before SIMD cosine math.
         exact_first: If True, checks direct KV store (<50ns) before executing neural embedding.
         resolve_parent: If True, automatically resolves and appends full parent document for chunks.
+        worktree_path: Absolute Git worktree or file path for scoped retrieval.
+        require_verified: Include only matches with verified source fingerprints.
 
     Returns:
         Formatted matches with similarity scores, parent keys, and cached content.
     """
+    if worktree_path is not None:
+        return _scoped(
+            worktree_path,
+            workspace_id,
+            lambda scope: scope.search(
+                query, top_k, threshold, tags, exact_first, resolve_parent, require_verified
+            ),
+            telemetry="semantic_search",
+        )
+    if require_verified:
+        return json.dumps(
+            {"status": "WORKTREE_REQUIRED", "reason": "Supply worktree_path to verify results."}
+        )
     try:
         cache = get_semantic_cache()
         client = get_client()
@@ -775,15 +962,34 @@ def kache_semantic_search(
         return f"[ERROR] Semantic search error: {e}"
 
 
-def kache_get_parent_document(parent_key: str) -> str:
+def kache_get_parent_document(
+    parent_key: str,
+    worktree_path: str | None = None,
+    require_verified: bool = False,
+    workspace_id: str = "",
+) -> str:
     """Fetch the full unabridged parent document for a chunked context from KacheDB.
 
     Args:
         parent_key: The parent document key (e.g. 'doc:workspace:topic' or 'doc:topic').
+        worktree_path: Absolute Git worktree or file path when using a scoped parent reference.
+        require_verified: Return the parent only when its sources can be verified.
+        workspace_id: Optional namespace used when saving the context.
 
     Returns:
         The full parent document text or a NOT_FOUND notification.
     """
+    if worktree_path is not None:
+        return _scoped(
+            worktree_path,
+            workspace_id,
+            lambda scope: scope.parent(parent_key, require_verified),
+            telemetry="parent_doc",
+        )
+    if require_verified:
+        return json.dumps(
+            {"status": "WORKTREE_REQUIRED", "reason": "Supply worktree_path to verify results."}
+        )
     try:
         client = get_client()
         t0 = time.perf_counter()
@@ -811,16 +1017,19 @@ def kache_get_parent_document(parent_key: str) -> str:
         return f"[ERROR] Failed to fetch parent document: {e}"
 
 
-def kache_delete(key: str, workspace_id: str = "") -> str:
+def kache_delete(key: str, workspace_id: str = "", worktree_path: str | None = None) -> str:
     """Delete a key or semantic vector entry from KacheDB.
 
     Args:
         key: The key or topic to delete.
         workspace_id: Optional workspace ID namespace.
+        worktree_path: Absolute Git worktree or file path for a scoped topic or parent reference.
 
     Returns:
         Confirmation status.
     """
+    if worktree_path is not None:
+        return _scoped(worktree_path, workspace_id, lambda scope: scope.delete(key))
     try:
         client = get_client()
         target_index = _get_target_index(workspace_id)
@@ -952,6 +1161,7 @@ def kache_index_workspace(
     path: str = ".",
     workspace_id: str = "",
     force: bool = False,
+    worktree_path: str | None = None,
 ) -> str:
     """Scan and index all codebase symbols into KacheDB SwissTable and vector index.
 
@@ -967,10 +1177,20 @@ def kache_index_workspace(
         path: Root directory to index. Defaults to current working directory.
         workspace_id: Optional workspace ID override. Auto-derived from project name if empty.
         force: If True, re-indexes even when the git commit watermark is unchanged.
+        worktree_path: Absolute Git worktree or file path for revision-aware indexing.
 
     Returns:
         JSON status report with indexed symbol counts, languages, and elapsed time.
     """
+    if worktree_path is not None:
+        return _scoped(
+            worktree_path,
+            workspace_id,
+            lambda scope: scope.refresh(force=force),
+            hint=path if path != "." else "",
+            rebuild=force,
+            telemetry="write",
+        )
     import os
     import time as _time
 
@@ -1167,6 +1387,7 @@ def kache_explore_symbol(
     symbol: str,
     workspace_id: str = "",
     file_path: str = "",
+    worktree_path: str | None = None,
 ) -> str:
     """Instantaneous (< 50 ns) symbol inspection from KacheDB SwissTable.
 
@@ -1178,10 +1399,19 @@ def kache_explore_symbol(
         symbol: The symbol name to look up (e.g. "Config", "new", "fetch_data").
         workspace_id: Optional workspace ID to scope lookup. Searches globally if empty.
         file_path: Optional file path or hint to automatically anchor and index the codebase.
+        worktree_path: Absolute Git worktree or file path to check for current definitions.
 
     Returns:
         JSON with all definition locations for the symbol, or a NOT_FOUND message.
     """
+    if worktree_path is not None:
+        return _scoped(
+            worktree_path,
+            workspace_id,
+            lambda scope: scope.explore(symbol),
+            hint=file_path,
+            telemetry="kv_get",
+        )
     t0 = _import_time()
     try:
         client = get_client()
@@ -1301,6 +1531,7 @@ def _import_time() -> float:
 def kache_workspace_status(
     workspace_id: str = "",
     auto_index: bool = True,
+    worktree_path: str | None = None,
 ) -> str:
     """Return indexing status, total indexed symbols, languages detected,
     last git commit indexed, and cache freshness for the workspace.
@@ -1308,10 +1539,19 @@ def kache_workspace_status(
     Args:
         workspace_id: Optional workspace ID to inspect. Checks all workspaces if empty.
         auto_index: If True (default), lazily indexes the workspace if not yet indexed.
+        worktree_path: Absolute Git worktree or file path for scoped index status.
 
     Returns:
         JSON status report with symbol counts and git watermark info.
     """
+    if worktree_path is not None:
+        return _scoped(
+            worktree_path,
+            workspace_id,
+            lambda scope: scope.status(auto_index),
+            read_only=not auto_index,
+            telemetry="write" if auto_index else "",
+        )
     try:
         client = get_client()
         ws = workspace_id.strip().lower().replace(" ", "-").replace("_", "-")
