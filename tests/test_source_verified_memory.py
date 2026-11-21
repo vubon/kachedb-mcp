@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -21,8 +22,10 @@ from mcp.types import TextContent
 
 from kachedb import KacheClient
 from kachedb_mcp import tools
+from kachedb_mcp.config import settings
+from kachedb_mcp.indexer import scoped_memory, worktree
 from kachedb_mcp.indexer.catalog import catalog_path
-from kachedb_mcp.indexer.scoped_memory import Embeddings
+from kachedb_mcp.indexer.scoped_memory import Embeddings, SourceInput
 from kachedb_mcp.telemetry import TelemetryTracker
 
 if TYPE_CHECKING:
@@ -380,6 +383,75 @@ def test_semantic_retrieval_and_replacement_reclaim_old_vectors(scope: Path) -> 
     exact = json.loads(tools.kache_semantic_search("Semantic probe", **anchor))
     assert exact["matches"][0]["content"] == "Replacement"
     assert exact["matches"][0]["freshness"] == "unverified"
+
+
+@pytest.mark.parametrize("symbol_seconds", [0.5, 6.0])
+def test_slow_code_backfill_preserves_saved_context(
+    scope: Path, monkeypatch: pytest.MonkeyPatch, symbol_seconds: float
+) -> None:
+    elapsed = 0.0
+    clock = SimpleNamespace(monotonic=lambda: time.monotonic() + elapsed, time=time.time)
+    for module in (tools, scoped_memory, worktree):
+        monkeypatch.setattr(module, "time", clock)
+
+    def embed_document(text: str) -> list[float]:
+        nonlocal elapsed
+        if text.startswith("function target_"):
+            elapsed += symbol_seconds
+        return [1.0, 0.0]
+
+    monkeypatch.setattr(
+        tools,
+        "_scoped_embeddings",
+        lambda: Embeddings(
+            "slow-code",
+            lambda _: [1.0, 0.0],
+            embed_document,
+            lambda title, text: [(title, text)],
+        ),
+    )
+    (scope / "foo.py").write_text(
+        "".join(f"def target_{number}():\n    pass\n\n" for number in range(40)),
+        encoding="utf-8",
+    )
+    anchor = str(scope)
+    indexed = json.loads(tools.kache_index_workspace(worktree_path=anchor))
+    assert indexed["status"] == "UPDATED", indexed
+    saved = json.loads(
+        tools.kache_save_context(
+            "Saved decision",
+            "Read the source.",
+            sources=[SourceInput(path="foo.py")],
+            worktree_path=anchor,
+        )
+    )
+    assert saved["status"] == "SAVED", saved
+
+    def search() -> int:
+        result = json.loads(
+            tools.kache_semantic_search(
+                "Related decision",
+                exact_first=False,
+                resolve_parent=True,
+                require_verified=True,
+                worktree_path=anchor,
+            )
+        )
+        assert result["status"] == "INCOMPLETE", result
+        assert result["reason"] == "code_index_pending", result
+        assert [match["parent_ref"] for match in result["matches"]] == [saved["parent_ref"]]
+        assert result["matches"][0]["freshness"] == "verified"
+        path = catalog_path(scope, "", "127.0.0.1", settings.port)
+        with sqlite3.connect(path) as catalog:
+            count: int = catalog.execute("SELECT count(*) FROM code_vectors").fetchone()[0]
+        return count
+
+    first = search()
+    if symbol_seconds < 5.0:
+        assert 0 < first < 32
+        assert search() > first
+    else:
+        assert first == 0
 
 
 def test_parent_expansion_deduplicates_and_reads_each_parent_once(

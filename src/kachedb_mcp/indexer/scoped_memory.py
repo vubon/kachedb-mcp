@@ -29,6 +29,8 @@ if TYPE_CHECKING:
 
 MAX_SOURCES = 32
 MAX_CANDIDATES = 100
+VECTOR_SEARCH_RESERVE = 1.0
+VECTOR_PUBLISH_RESERVE = 0.25
 
 
 class SourceInput(BaseModel):
@@ -322,8 +324,10 @@ class ScopedMemory(ScopedIndex):
 
         attempt = uuid4().hex
         vectors = []
+        longest_embedding = 0.0
         for ordinal, value in enumerate(values):
-            self.worktree.remaining()
+            if self.worktree.remaining() <= longest_embedding + VECTOR_PUBLISH_RESERVE:
+                break
             assert value is not None
             definition = json.loads(value)
             text = (
@@ -332,15 +336,22 @@ class ScopedMemory(ScopedIndex):
             )
             if definition.get("doc"):
                 text += f"\n{definition['doc']}"
+            started = time.monotonic()
+            embedding = embeddings.document(text[:6000])
+            longest_embedding = max(longest_embedding, time.monotonic() - started)
+            if self.worktree.remaining() <= VECTOR_PUBLISH_RESERVE:
+                break
             owner = f"{attempt}:{ordinal}"
             vector = Record(owner, f"c:{owner}", index)
-            vectors.append(Vector(vector, embeddings.document(text[:6000]), _text(value)))
+            vectors.append(Vector(vector, embedding, _text(value)))
+        if not vectors:
+            return True
         self.stage(attempt, [item.record for item in vectors])
         try:
             self._write_vectors(vectors)
             self.worktree.remaining()
             with self.catalog.publish(generation, attempt):
-                for row, item in zip(rows, vectors, strict=True):
+                for row, item in zip(rows[: len(vectors)], vectors, strict=True):
                     self.catalog.publish_vector(
                         row["path"], index, row["record"], item.record.owner
                     )
@@ -349,7 +360,7 @@ class ScopedMemory(ScopedIndex):
             if isinstance(exc, WorktreeError) and exc.status == "RETRY":
                 return True
             raise
-        return more
+        return more or len(vectors) < len(rows)
 
     def _repair_vector_profile(self, index: str) -> None:
         with self.catalog.transaction():
@@ -393,9 +404,26 @@ class ScopedMemory(ScopedIndex):
         self.worktree.remaining()
         vector = embeddings.query(query)
         index = self._index(embeddings, len(vector))
+
+        def retrieve(*, include_code: bool) -> dict[str, Any]:
+            return self._search_vectors(
+                index,
+                vector,
+                top_k,
+                threshold,
+                tags,
+                require_verified,
+                resolve_parent,
+                include_code=include_code,
+            )
+
+        result = None
         code_incomplete = True
         warnings: dict[str, Any] = {}
+        deadline = self.worktree.deadline
+        code_deadline = deadline - VECTOR_SEARCH_RESERVE
         try:
+            self.worktree.deadline = code_deadline
             refresh = self.refresh(allow_update=settings.auto_index)
             if refresh["status"] != "INDEX_REQUIRED":
                 warnings = {
@@ -404,11 +432,20 @@ class ScopedMemory(ScopedIndex):
                     if key in refresh
                 }
                 self._repair_vector_profile(index)
-                # Advance a profile incrementally without delaying every query for a cold backfill.
-                for _ in range(4):
-                    code_incomplete = self._backfill(embeddings, index)
-                    if not code_incomplete or self.worktree.remaining() < 1.0:
-                        break
+                code_incomplete = bool(self.catalog.definitions_without_vectors(index))
+                if code_incomplete:
+                    # A synchronous embedding can overrun its budget, so retrieve saved
+                    # context before doing any code embeddings for an incomplete profile.
+                    self.worktree.deadline = deadline
+                    result = retrieve(include_code=False)
+                    self.worktree.deadline = code_deadline
+                    for _ in range(4):
+                        batch_started = time.monotonic()
+                        code_incomplete = self._backfill(embeddings, index)
+                        if not code_incomplete or self.worktree.remaining() < max(
+                            1.0, time.monotonic() - batch_started
+                        ):
+                            break
         except WorktreeError as exc:
             if exc.status not in (
                 "INCOMPLETE",
@@ -419,17 +456,16 @@ class ScopedMemory(ScopedIndex):
             ):
                 raise
             code_incomplete = True
+        finally:
+            self.worktree.deadline = deadline
 
-        result = self._search_vectors(
-            index,
-            vector,
-            top_k,
-            threshold,
-            tags,
-            require_verified,
-            resolve_parent,
-            include_code=not code_incomplete,
-        )
+        if result is None or not code_incomplete:
+            try:
+                result = retrieve(include_code=not code_incomplete)
+            except WorktreeError as exc:
+                if result is None or exc.status != "INCOMPLETE":
+                    raise
+                code_incomplete = True
         if code_incomplete:
             result["status"] = "INCOMPLETE"
             result.setdefault("reason", "code_index_pending")

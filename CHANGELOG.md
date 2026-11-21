@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.1] — 2026-11-21
+
+### Fixed
+- **Time-Boxed Code-Vector Backfill & Pre-Fetched Context Retrieval (`indexer/scoped_memory.py`):**
+  - Retrieve saved context matches before starting synchronous code-symbol embeddings when a worktree profile is still warming up, ensuring verified saved context results are never starved by slow local CPU embedders (such as ONNX `embeddinggemma-2`).
+  - Time-box `_backfill` using dynamic per-symbol embedding duration tracking (`longest_embedding + VECTOR_PUBLISH_RESERVE`) and publish partial batches (`rows[:len(vectors)]`) so incremental backfill makes forward progress within the request deadline while reserving `VECTOR_SEARCH_RESERVE` for vector search.
+
+---
+
 ## [0.6.0] — 2026-11-21
 
 ### Added
