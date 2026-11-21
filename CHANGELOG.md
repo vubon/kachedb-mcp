@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.0] — 2026-11-21
+
+### Added
+- **Source-Verified, Worktree-Scoped Agent Memory:**
+  - Added optional `worktree_path`, `sources`, and `require_verified` parameters across `kache_index_workspace`, `kache_explore_symbol`, `kache_workspace_status`, `kache_save_context`, `kache_semantic_search`, `kache_get_parent_document`, and `kache_delete` while preserving 100% backwards compatibility for unscoped calls.
+  - **Git Worktree Observation & TOCTOU-Safe Source Reads (`indexer/worktree.py`):**
+    - Resolves canonical Git worktrees (including linked worktrees sharing a commit), enforces `KACHEDB_WORKSPACE_ROOTS`, and returns explicit `WORKTREE_NOT_GIT` / `WORKTREE_MISMATCH` statuses.
+    - Reconciles committed diffs, staged edits, unstaged edits, collapsed untracked directories, NUL-delimited renames, deletions, and reverted dirty files (`indexed_dirty_files`) incrementally.
+    - Enforces POSIX `dir_fd` + `O_NOFOLLOW` + before/after `fstat`/`lstat` TOCTOU checks and a pre-open case-insensitive credential filename denylist (`.env`, `.env.*`, `*.env`, `*.pem`, `*.key`, `*credential*`) returning `SOURCE_PATH_BLOCKED`.
+  - **WAL SQLite Publication Catalog (`indexer/catalog.py`):**
+    - Local per-worktree SQLite catalog (`~/.local/state/kachedb-mcp` / `%LOCALAPPDATA%\kachedb-mcp`, configurable via `KACHEDB_MCP_STATE_DIR`) with `WAL` mode, transactional schema initialization & upgrades (`PRAGMA user_version = 1`), generation-fenced publication, and crash-safe garbage collection of retired/abandoned records.
+  - **Worktree-Scoped Exact Symbol Refresh (`indexer/scoped_index.py`, `parser.py`):**
+    - Preserves same-file and same-line duplicate symbol definitions via revision-local ordinals.
+    - Quarantines per-file Tree-Sitter syntax errors (`parse_failed=1`, retiring stale definitions and reporting `unparsed_file_count`/`unparsed_files`) without blocking valid files.
+    - Uses a pooled `KacheClient` and KacheDB `v0.5.0` atomic two-phase `MSET` batches within `2 MiB` arg / `4 MiB` batch bounds (with automatic per-key `SET` fallback on older daemons).
+  - **Source-Backed Context & Vector Retrieval (`indexer/scoped_memory.py`, `telemetry.py`):**
+    - Verifies declared source files via SHA-256 on save and lookup, surfacing `verified`, `stale`, or `unverified` freshness with affected paths and reason codes.
+    - Isolates worktree prompt aliases and flat vector profiles per embedding model/dimension, deduplicates `resolve_parent=True` chunk hits with per-lookup parent caching, relaxes similarity thresholds before dropping explicit `tags` (`tag_filter_relaxed`), and records scoped outcomes in `telemetry.py`.
+  - Added 19 real-daemon integration tests (`tests/test_source_verified_memory.py`) covering reverts, renames, Unicode paths, WAL concurrency, multi-process publication racing, and MCP stdio round-trips.
+
+---
+
 ## [0.5.1] — 2026-11-17
 
 ### Fixed
