@@ -164,6 +164,20 @@ The `--ide` installer automatically discovers local EmbeddingGemma 2 weights (`-
 
 ---
 
+## Source-verified agent memory
+
+Pass `worktree_path` with the absolute path to a local Git worktree or a file inside it. The scoped tools return JSON text with a `worktree_id` and operation status. Linked worktrees have independent indexes, including when they share a commit.
+
+1. Call `kache_index_workspace` with `worktree_path` to warm the index. `kache_explore_symbol` checks the worktree before returning a definition, including uncommitted changes saved to disk. Each definition includes the repo-relative file path, line range, and `sha256`.
+2. To save a decision or summary, call `kache_save_context` with the same `worktree_path` and a `sources` array such as `[{"path":"src/service.py","sha256":"<fingerprint from the source read>"}]`. The digest is optional. A supplied digest must match at save time. Use the returned `parent_ref` with `kache_get_parent_document` in the same scope.
+3. Pass `require_verified=true` to scoped semantic search or parent retrieval to reuse only entries whose declared files still match. Read the affected files directly when a match is `stale`, and use the reason code to investigate an `unverified` result. A `verified` result confirms the source bytes observed by MCP. The caller chooses the sources and interprets them.
+
+Keep the same optional `workspace_id` across calls when using a named namespace. Use `kache_workspace_status` with `auto_index=false` to inspect a scope without refreshing it. Files with parser errors are listed in `unparsed_files`. Definitions from other files remain available, and a lookup that may depend on an unparsed file returns `INCOMPLETE` when it finds no match. A cold semantic profile backfills code vectors in bounded batches. On `INCOMPLETE` with `code_index_pending`, retry to advance it or use exact symbol lookup.
+
+Scoped semantic search relaxes the score threshold before relaxing requested tags. When it falls back to unfiltered results, it sets `tag_filter_relaxed`. With `resolve_parent=true`, results include each saved document once. Scoped hits, misses, and writes contribute to cache telemetry. The token and latency savings estimates continue to use the legacy baseline for legacy calls.
+
+The local SQLite catalog records the worktree identity, index state, and references to saved context. Its default location is `$XDG_STATE_HOME/kachedb-mcp` or `~/.local/state/kachedb-mcp` on Unix, and `%LOCALAPPDATA%\kachedb-mcp` on Windows. Set `KACHEDB_MCP_STATE_DIR` to change the directory. Back up the entire directory, including any SQLite WAL files present, with MCP stopped. Retain the corresponding daemon data if you rely on saved entries. After a catalog reset, rebuild the symbol index and resave source-backed contexts. Omit `worktree_path` to use the legacy tool behavior.
+
 ## 🌐 Multi-Language AST Support
 
 Tree-Sitter parsers extract rich symbol graphs with zero external compiler dependencies:
@@ -186,6 +200,7 @@ Tree-Sitter parsers extract rich symbol graphs with zero external compiler depen
 | `KACHEDB_PORT` | `6380` | KacheDB daemon TCP port |
 | `KACHEDB_WORKSPACE_ROOTS` | *(empty)* | Optional directory list (separated by `:` on Unix or `;` on Windows) for multi-project discovery |
 | `KACHEDB_AUTO_INDEX` | `1` | Enable autonomous lazy workspace indexing (`1` or `0`) |
+| `KACHEDB_MCP_STATE_DIR` | OS user state directory | Location of local worktree catalogs for scoped tools |
 | `KACHEDB_INDEX` | `agent_semantic_memory` | Target vector index name for semantic memory |
 | `KACHEDB_THRESHOLD` | `0.80` | Minimum cosine similarity (0.0 – 1.0) for semantic hits |
 | `KACHEDB_TOKEN_COST_PER_MILLION` | `3.0` | Input token cost in USD per 1M tokens for telemetry accounting |
@@ -198,6 +213,17 @@ Tree-Sitter parsers extract rich symbol graphs with zero external compiler depen
 | `OPENAI_API_KEY` | *(optional)* | API key if using `KACHEDB_EMBEDDER=openai` |
 
 ---
+
+## Testing
+
+Run the tests in the project environment to use the MCP v1 dependency declared in `pyproject.toml`.
+
+```bash
+uv sync --extra dev
+uv run pytest
+```
+
+Set `KACHEDB_TEST_SERVER` to the path of a local KacheDB v0.5.0 binary to run the scoped live-daemon tests.
 
 ## 📄 License
 

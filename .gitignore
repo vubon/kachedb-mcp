@@ -32,3 +32,6 @@ htmlcov/
 .ruff_cache/
 .DS_Store
 uv.lock
+
+# Machine-local AI-DLC runtime state
+aidlc/
